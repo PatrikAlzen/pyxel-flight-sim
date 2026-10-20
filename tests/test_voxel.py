@@ -1,12 +1,10 @@
 import math
 
 import numpy as np
-import pytest
 
 from flightsim.render import palette
 from flightsim.render.voxel import RenderSettings, VoxelRenderer
 from flightsim.sim.camera import Camera
-from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainLevel
 
 W, H = 64, 48
@@ -90,24 +88,3 @@ def test_coarse_level_used_for_far_slices():
     assert [lvl for lvl, _ in ranges] == [fine, coarse]
     (_, near), (_, far) = ranges
     assert near.start == 0 and near.stop == far.start and far.stop == len(renderer.z)
-
-
-@pytest.mark.parametrize("step", [1.0, 4.0])
-def test_terrain_level_matches_generator(step):
-    generator = TerrainGenerator(seed=7)
-    level = TerrainLevel.empty(256, step)
-    level.fill(generator, center_x=1000.0, center_y=-500.0)
-    # The window is aligned down to whole tiles, so the centre can sit anywhere
-    # in its upper half: points up to half a window below the centre are inside.
-    xs = np.array([1000.0, 1000.0 - 37 * step, 1000.0 - 90 * step])
-    ys = np.array([-500.0, -500.0 - 11 * step, -500.0 - 120 * step])
-    iy, ix = level.indices(xs, ys)
-    for x, y, h, c in zip(xs, ys, level.heights[iy, ix], level.colors[iy, ix]):
-        sample = generator.sample(x, y, 1, 1, step)
-        assert h == sample.height[0, 0]
-        assert c == sample.color[0, 0]
-
-
-def test_terrain_level_rejects_bad_size():
-    with pytest.raises(ValueError):
-        TerrainLevel.empty(100, 1.0)

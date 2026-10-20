@@ -4,6 +4,7 @@ Units: one world unit is one heightmap cell at full detail; heights use the
 same unit. Sea level is 0.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -97,11 +98,25 @@ class TerrainGenerator:
         ranges = smoothstep(
             -0.25, 0.25, self._ranges.fbm(x / s.range_period, y / s.range_period)
         )
-        ridges = self._mountains.ridged(x / s.mountain_period, y / s.mountain_period)
+        # Mountains and hills are the most expensive layers and are masked out
+        # over much of the world (sea, plains), so only evaluate them where needed.
+        ridges = _where_needed(
+            inland * ranges,
+            lambda x, y: self._mountains.ridged(
+                x / s.mountain_period, y / s.mountain_period
+            ),
+            x,
+            y,
+        )
         mountains = ridges**2 * s.mountain_height * inland * ranges
 
         hills = (
-            self._hills.fbm(x / s.hill_period, y / s.hill_period)
+            _where_needed(
+                on_land,
+                lambda x, y: self._hills.fbm(x / s.hill_period, y / s.hill_period),
+                x,
+                y,
+            )
             * s.hill_height
             * on_land
         )
@@ -172,3 +187,25 @@ class TerrainGenerator:
             biome=biome,
             color=biome_color(biome, shade),
         )
+
+
+def _where_needed(
+    weight: np.ndarray,
+    noise: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    x: np.ndarray,
+    y: np.ndarray,
+) -> np.ndarray:
+    """``noise(x, y)`` where ``weight > 0`` and 0 elsewhere.
+
+    Noise is evaluated point by point, so computing it on a subset gives
+    exactly the same values as computing it everywhere.
+    """
+    need = weight > 0
+    count = int(np.count_nonzero(need))
+    if count == need.size:
+        return np.broadcast_to(noise(x, y), need.shape)
+    out = np.zeros(need.shape, dtype=np.float32)
+    if count:
+        xs, ys = np.broadcast_arrays(x, y)
+        out[need] = noise(xs[need], ys[need])
+    return out

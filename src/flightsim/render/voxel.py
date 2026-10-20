@@ -24,7 +24,7 @@ import numpy as np
 from flightsim.render import palette
 from flightsim.sim.camera import Camera
 from flightsim.terrain.noise import smoothstep
-from flightsim.terrain.world import TILE, TerrainLevel
+from flightsim.terrain.world import TerrainLevel
 
 # 4x4 ordered-dither thresholds in [0, 1).
 _BAYER = (
@@ -90,14 +90,14 @@ class VoxelRenderer:
     ) -> list[tuple[TerrainLevel, slice]]:
         """Assign each depth slice to the finest level whose window still covers it.
 
-        A ray at depth z can reach z * sqrt(1 + spread^2) from the camera, and
-        the camera can be up to one tile off the window centre.
+        A ray at depth z can reach z * sqrt(1 + spread^2) from the camera; it
+        must stay within the level's ``safe_radius``.
         """
         reach = self.z * math.hypot(1.0, float(self.spread[-1]))
         ranges, start = [], 0
         for i, level in enumerate(levels):
             last = i == len(levels) - 1
-            limit = level.extent / 2 - TILE * level.step
+            limit = level.safe_radius
             end = len(self.z) if last else int(np.searchsorted(reach, limit))
             if end > start:
                 ranges.append((level, slice(start, end)))

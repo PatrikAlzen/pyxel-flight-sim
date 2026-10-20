@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–2 klara: terränggenerering, kartvy och en 3D-vy med fri kamera över en statisk värld. Nästa steg: fas 3, oändlig värld.
+> **Status:** fas 0–3 klara: oändlig procedurell värld i 3D med fri kamera, plus kartvy. Nästa steg: fas 4, flygmodellen.
 
 ---
 
@@ -98,10 +98,10 @@ Ett separat **fuktighetsfält** (lågfrekvent brus) kombineras med höjd för at
 ### Oändlig värld med chunkar
 
 - Världen delas in i **chunkar** om 128×128 celler. En chunk innehåller `height: float32[128,128]` och `color: uint8[128,128]`.
-- Chunkar genereras vid behov och cachas i en **LRU-cache** (t.ex. ~64 chunkar). Gamla chunkar slängs; de kan alltid återskapas från seeden.
+- Chunkar genereras vid behov. Gamla chunkar slängs; de kan alltid återskapas från seeden. (Det blev ingen separat LRU-cache: ringbufferten nedan *är* cachen.)
 - Eftersom brusfunktionen utvärderas på **världskoordinater** blir det inga skarvar mellan chunkar.
 - Renderaren arbetar mot ett **lokalt fönster** (t.ex. 1024×1024 celler) som byggs av närliggande chunkar och flyttas när spelaren passerar en chunkgräns. Uppslag sker då med enkel array-indexering.
-- Generering kan senare flyttas till en bakgrundstråd så att det aldrig hackar när nya chunkar laddas (NumPy släpper GIL:en under tunga operationer).
+- Generering sker i **bakgrundsprocesser**, inte trådar. Pyxels huvudloop håller GIL:en, se fas 3.
 
 ## Rendering
 
@@ -223,7 +223,7 @@ pyxel-flight-sim/
 │       │   ├── noise.py       # vektoriserat gradientbrus, fbm, ridged, domain warp
 │       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
-│       │   ├── world.py       # terrängnivåer (LOD) som ringbuffertar runt kameran, höjdfråga
+│       │   ├── world.py       # LOD-nivåer som ringbuffertar som följer kameran, arbetsprocesser
 │       │   └── shading.py     # lutningsbaserad ljussättning
 │       ├── render/
 │       │   ├── palette.py     # palettdefinition och färgramper
@@ -241,6 +241,7 @@ pyxel-flight-sim/
     ├── test_generator.py      # inga skarvar mellan chunkar, biom, vattenyta
     ├── test_palette.py        # palettlayout, dimma ↔ himmel
     ├── test_voxel.py          # horisont, tipp/roll, skymning, dimma, LOD, ringbuffert
+    ├── test_world.py          # fönster som följer kameran, stegvis = nyfyllt, arbetsprocesser
     ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
     └── test_aircraft.py       # stall, svängning, kollision (fas 4)
 ```
@@ -295,13 +296,26 @@ Lärdomar:
 - **Dimma och himmel:** paletten har nu tre dimkopior av terrängfärgerna (klar, 35 %, 68 %) och 8 himmelsnyanser, totalt 204 färger. Dimnivån per pixel ditheras mellan kopiorna, och fullt dimmig terräng har exakt samma färg som himlen vid horisonten. Därför smälter fjärran berg in i himlen utan synlig kant.
 - **Tipp och roll** stöds redan i renderaren: tipp flyttar horisonten, roll skjuvar varje kolumn.
 - **Prestanda:** rendering 3,9 ms (p95 4,3 ms) med `uv run flightsim --bench`, ~5,6 ms i fönster. Spelet håller 30 FPS.
-- **Begränsning:** världen är än så länge statisk runt origo. Flyger man längre än ~400 enheter upprepas terrängen, eftersom ringbufferten aldrig fylls på. Det åtgärdas i fas 3.
+- **Begränsning:** världen är än så länge statisk runt origo. Flyger man längre än ~400 enheter upprepas terrängen, eftersom ringbufferten aldrig fylls på. (Åtgärdat i fas 3.)
 
-### Fas 3 – Oändlig värld
-- [ ] Låt varje `TerrainLevel` följa kameran: när kameran passerar en tilegräns genereras bara den nya raden/kolumnen av tiles, som skriver över den som scrollat ut.
-- [ ] Generering i bakgrundstråd (en tile tar ~21 ms), med prioritet för den finaste nivån och tiles i färdriktningen.
-- [ ] Optimera generatorn (t.ex. hoppa över bergsbrus där bergsmasken är 0).
-- [ ] Verifiera att det inte finns synliga skarvar och att chunkladdning inte hackar.
+### Fas 3 – Oändlig värld ✅
+- [x] Låt varje `TerrainLevel` följa kameran: när kameran passerar en tilegräns genereras bara den nya raden/kolumnen av tiles, som skriver över den som scrollat ut.
+- [x] Generering i bakgrunden, med prioritet för den finaste nivån och de närmaste tilesen. Det blev **processer** i stället för en tråd (se nedan).
+- [x] Optimera generatorn (t.ex. hoppa över bergsbrus där bergsmasken är 0).
+- [x] Verifiera att det inte finns synliga skarvar och att chunkladdning inte hackar.
+
+**Resultat:**
+- Världen är oändlig. Fönstret för varje nivå centreras på närmaste tilehörn, så kameran är aldrig mer än en halv tile från mitten. Varje plats i ringbufferten minns vilken världstile den innehåller, så `missing()` ser direkt vilka tiles som behövs.
+- `TerrainWorld` delar ut saknade tiles till **2 arbetsprocesser** (`config.TERRAIN_WORKERS`). Den finaste nivån går först och inom en nivå närmast först. Varje process har högst två jobb åt gången, så att prioriteringen hinner följa med när kameran svänger. Färdiga tiles läggs in i `update()` mellan bildrutorna, så renderingen ser aldrig en halvskriven tile. Tiles som hunnit lämna fönstret slängs.
+- **Generatorn är ~40 % snabbare:** 21 → 12,7 ms per tile. Gradienterna förpermuteras som komplexa tal (ett uppslag per hörn i stället för tre), bråkdelarna räknas i float32 och berg- och kullbrus räknas bara där deras mask är > 0. Resultatet är fortfarande bit-för-bit deterministiskt (testat).
+- **Startladdning** 3,3 s → 1,7 s.
+- **I riktigt fönster** (automatisk flygning i 12 s): stabila 30 FPS (medel 33,3 ms, max ~36–39 ms per bildruta) och **noll bildrutor med inaktuell terräng**, både i 10 och 25 enheter/bildruta (300–750 enheter/s). `flightsim --bench` hittar gränsen vid ungefär 30 enheter/bildruta.
+- Debugraden (`F1`) visar `TILES PENDING` och `STALE`, alltså tiles som saknas inom en nivås `safe_radius` och därför ritas med gammal data. Det ska alltid vara 0.
+
+**Lärdomar:**
+- **Pyxels huvudloop släpper inte GIL:en** medan den väntar på nästa bildruta. En bakgrundstråd fick i praktiken ingen tid alls (en tile på ~15 s) trots att benchmarken såg bra ut. Benchmarken pausar med `time.sleep`, som släpper GIL:en. Lösningen blev `multiprocessing` med vanliga pipes som huvudtråden pollar själv. `multiprocessing.Queue` och `ProcessPoolExecutor` använder hjälptrådar i huvudprocessen, och de skulle svältas på samma sätt.
+- Python 3.14 startar processer med **forkserver** på Linux, som importerar huvudmodulen på nytt. `__main__.py` och alla skript som startar spelet måste därför ha `if __name__ == "__main__":`.
+- Pyxels `quit()` kan avsluta utan att Pythons exit-hanterare körs. Arbetsprocesserna avslutar sig därför själva när pipen stängs.
 
 ### Fas 4 – Flygmodell
 - [ ] `aircraft.py` med gas, tipp, roll, bankade svängar, fart och överstegring.
@@ -332,7 +346,7 @@ Lärdomar:
 | Risk | Åtgärd |
 |---|---|
 | Python för långsamt för Voxel Space | Full NumPy-vektorisering, rita till array och kopiera via `data_ptr()`. Fallback: lägre upplösning, färre avståndssteg, Numba. |
-| Hack när nya chunkar genereras | Generera i förväg i en ring runt spelaren, i bakgrundstråd. |
+| Hack när nya chunkar genereras | Löst i fas 3: arbetsprocesser (inte trådar – Pyxel håller GIL:en) och en halv tiles marginal i varje nivå. |
 | Begränsad palett ger platt utseende | Utökad palett + dithering + lutningsskuggning. |
 | Roll ser konstig ut vid stora vinklar | Skjuvning för små vinklar, bildrotation för stora. |
 | Flygmodellen känns fel | Alla konstanter i `config.py`, debug-överlägg med live-värden. |

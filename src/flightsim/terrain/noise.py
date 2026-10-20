@@ -26,29 +26,33 @@ class GradientNoise:
     def __init__(self, seed: int) -> None:
         rng = np.random.default_rng(seed)
         perm = rng.permutation(PERIOD)
-        self._perm = np.concatenate([perm, perm]).astype(np.int64)
+        self._perm = np.concatenate([perm, perm]).astype(np.int32)
         angles = rng.random(PERIOD) * 2 * np.pi
-        self._gx = np.cos(angles)
-        self._gy = np.sin(angles)
+        # Gradient for hash index h is _grad[h] = gradient[perm[h]], stored as a
+        # complex number (x + iy) so each corner needs a single gather.
+        gradients = (np.cos(angles) + 1j * np.sin(angles)).astype(np.complex64)
+        self._grad = gradients[self._perm]
 
     def __call__(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        # Lattice coordinates need float64 to stay exact far from the origin;
+        # the fractional parts are fine in float32.
         x = np.asarray(x, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
         x0 = np.floor(x)
         y0 = np.floor(y)
-        fx = x - x0
-        fy = y - y0
-        xi = x0.astype(np.int64) & _MASK
-        yi = y0.astype(np.int64) & _MASK
-        perm = self._perm
-        px0 = perm[xi]
-        px1 = perm[xi + 1]
+        fx = (x - x0).astype(np.float32)
+        fy = (y - y0).astype(np.float32)
+        xi = (x0.astype(np.int64) & _MASK).astype(np.int32)
+        yi = (y0.astype(np.int64) & _MASK).astype(np.int32)
+        px0 = self._perm[xi]
+        px1 = self._perm[xi + 1]
+        grad = self._grad
 
         def corner(
             px: np.ndarray, dy_index: int, dx: np.ndarray, dy: np.ndarray
         ) -> np.ndarray:
-            g = perm[px + yi + dy_index]
-            return self._gx[g] * dx + self._gy[g] * dy
+            g = grad[px + (yi + dy_index)]
+            return g.real * dx + g.imag * dy
 
         n00 = corner(px0, 0, fx, fy)
         n10 = corner(px1, 0, fx - 1, fy)

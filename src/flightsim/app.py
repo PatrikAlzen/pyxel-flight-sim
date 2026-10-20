@@ -19,7 +19,6 @@ For now this is a free "ghost" camera for exploring the terrain:
 import argparse
 import math
 import time
-from collections.abc import Iterator
 
 import numpy as np
 import pyxel
@@ -30,26 +29,17 @@ from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 from flightsim.terrain.generator import TerrainGenerator
-from flightsim.terrain.world import TerrainLevel
+from flightsim.terrain.world import TerrainWorld
 
 W, H = config.SCREEN_W, config.SCREEN_H
 MAX_PITCH = math.radians(45)
 MAX_ROLL = math.radians(45)
-LOAD_BUDGET = 0.025  # seconds of terrain generation per frame while loading
 
 
-def make_levels() -> list[TerrainLevel]:
-    return [TerrainLevel.empty(size, step) for size, step in config.TERRAIN_LEVELS]
-
-
-def fill_levels(
-    levels: list[TerrainLevel], generator: TerrainGenerator, x: float, y: float
-) -> Iterator[float]:
-    """Fill every level around (x, y), yielding overall progress after each tile."""
-    steps = [level.fill_tiles(generator, x, y) for level in levels]
-    for i, step in enumerate(steps):
-        for fraction in step:
-            yield (i + fraction) / len(steps)
+def make_world() -> TerrainWorld:
+    return TerrainWorld(
+        TerrainGenerator(config.SEED), config.TERRAIN_LEVELS, config.TERRAIN_WORKERS
+    )
 
 
 class Timer:
@@ -64,13 +54,14 @@ class Timer:
 
 class App:
     def __init__(self) -> None:
-        self.generator = TerrainGenerator(config.SEED)
-        self.levels = make_levels()
+        self.world = make_world()
         self.renderer = VoxelRenderer(W, H)
         self.camera = Camera()
-        self.loading: Iterator[float] | None = fill_levels(
-            self.levels, self.generator, self.camera.x, self.camera.y
-        )
+        # Background workers generate the starting area while a progress bar
+        # is shown; afterwards they keep generating as the camera moves.
+        self.world.update(self.camera.x, self.camera.y)
+        self.load_total = self.world.pending
+        self.loading = True
         self.progress = 0.0
         self.show_debug = True
         self.render_time = Timer()
@@ -96,15 +87,15 @@ class App:
         if pyxel.btnp(pyxel.KEY_F1):
             self.show_debug = not self.show_debug
         self.move_camera()
+        self.world.update(self.camera.x, self.camera.y)
 
     def load_step(self) -> None:
-        deadline = time.perf_counter() + LOAD_BUDGET
-        try:
-            while time.perf_counter() < deadline:
-                self.progress = next(self.loading)
-        except StopIteration:
-            self.loading = None
-            ground = self.levels[0].height_at(self.camera.x, self.camera.y)
+        self.world.update(self.camera.x, self.camera.y)
+        pending = self.world.pending
+        self.progress = 1 - pending / self.load_total
+        if pending == 0:
+            self.loading = False
+            ground = self.world.height_at(self.camera.x, self.camera.y)
             self.camera.altitude = ground + 60
 
     def move_camera(self) -> None:
@@ -132,7 +123,7 @@ class App:
         cam.pitch = max(-MAX_PITCH, min(MAX_PITCH, cam.pitch))
         cam.roll = max(-MAX_ROLL, min(MAX_ROLL, cam.roll))
 
-        ground = self.levels[0].height_at(cam.x, cam.y)
+        ground = self.world.height_at(cam.x, cam.y)
         cam.altitude = max(cam.altitude, ground + config.GHOST_CLEARANCE)
 
     def draw(self) -> None:
@@ -145,7 +136,7 @@ class App:
         self.last_frame = now
 
         start = time.perf_counter()
-        self.renderer.render(screen_array(), self.levels, self.camera)
+        self.renderer.render(screen_array(), self.world.levels, self.camera)
         self.render_time.add(time.perf_counter() - start)
 
         if self.show_debug:
@@ -164,7 +155,7 @@ class App:
 
     def draw_debug(self) -> None:
         cam = self.camera
-        ground = self.levels[0].height_at(cam.x, cam.y)
+        ground = self.world.height_at(cam.x, cam.y)
         fps = 1000 / self.frame_time.ms if self.frame_time.ms else 0
         agl = cam.altitude - ground
         pitch = math.degrees(cam.pitch)
@@ -173,39 +164,61 @@ class App:
             f"X {cam.x:.0f} Y {cam.y:.0f}  ALT {cam.altitude:.0f}  AGL {agl:.0f}",
             f"HDG {cam.heading_degrees:03.0f}  PITCH {pitch:+.0f}  ROLL {roll:+.0f}",
             f"RENDER {self.render_time.ms:4.1f}MS  {fps:4.1f}FPS",
+            f"TILES PENDING {self.world.pending}  STALE {self.world.stale_tiles(cam.x, cam.y)}",
         ]
         for i, line in enumerate(lines):
             pyxel.text(3, 3 + i * 7, line, pyxel.COLOR_BLACK)
             pyxel.text(2, 2 + i * 7, line, pyxel.COLOR_WHITE)
 
 
-def bench(frames: int) -> None:
-    """Time terrain generation and rendering without opening a window."""
-    generator = TerrainGenerator(config.SEED)
-    levels = make_levels()
+def bench(frames: int, speed: float) -> None:
+    """Time terrain generation and rendering without opening a window.
+
+    Flies straight ahead at ``speed`` world units per frame, paced to the real
+    frame rate like the game.
+    """
+    world = make_world()
     start = time.perf_counter()
-    for _ in fill_levels(levels, generator, 0.0, 0.0):
+    for _ in world.fill(0.0, 0.0):
         pass
     print(
-        f"terrain levels {config.TERRAIN_LEVELS}: {time.perf_counter() - start:.2f} s"
+        f"initial terrain {config.TERRAIN_LEVELS}: {time.perf_counter() - start:.2f} s"
     )
 
     renderer = VoxelRenderer(W, H)
     print(f"resolution {W}x{H}, depth slices {len(renderer.z)}")
     img = pyxel.Image(W, H)  # keep a reference: the view does not keep the image alive
     out = image_array(img)
-    camera = Camera(altitude=levels[0].height_at(0, 0) + 60)
-    times = []
-    for i in range(frames):
-        camera.heading = i * 0.02
-        camera.x, camera.y = math.sin(i * 0.01) * 100, i * 1.5
-        start = time.perf_counter()
-        renderer.render(out, levels, camera)
-        times.append((time.perf_counter() - start) * 1000)
-    times = np.array(times[3:])  # skip warm-up
+    camera = Camera(heading=math.radians(70))
+    frame_budget = 1 / config.FPS
+    render_ms, frame_ms, stale_frames, max_pending = [], [], 0, 0
+    for _ in range(frames):
+        frame_start = time.perf_counter()
+        fx, fy = camera.forward
+        camera.x += fx * speed
+        camera.y += fy * speed
+        camera.altitude = world.height_at(camera.x, camera.y) + 60
+        world.update(camera.x, camera.y)
+        stale_frames += world.stale_tiles(camera.x, camera.y) > 0
+        max_pending = max(max_pending, world.pending)
+        render_start = time.perf_counter()
+        renderer.render(out, world.levels, camera)
+        now = time.perf_counter()
+        render_ms.append((now - render_start) * 1000)
+        frame_ms.append((now - frame_start) * 1000)
+        time.sleep(max(0.0, frame_budget - (now - frame_start)))
+    world.close()
+
+    distance = frames * speed
+    for name, values in [("render", render_ms), ("update+render", frame_ms)]:
+        v = np.array(values[3:])  # skip warm-up
+        print(
+            f"{name:<14} mean {v.mean():5.2f} ms  p95 {np.percentile(v, 95):5.2f} ms  "
+            f"max {v.max():5.2f} ms  ({1000 * frame_budget:.1f} ms budget)"
+        )
     print(
-        f"render mean {times.mean():.2f} ms, p95 {np.percentile(times, 95):.2f} ms "
-        f"({1000 / config.FPS:.1f} ms budget at {config.FPS} fps)"
+        f"flew {distance:.0f} units at {speed:g}/frame: max pending tiles {max_pending}, "
+        f"frames with stale terrain {stale_frames}/{frames}"
     )
 
 
@@ -214,9 +227,12 @@ def main() -> None:
     parser.add_argument(
         "--bench", action="store_true", help="time rendering headless and exit"
     )
-    parser.add_argument("--frames", type=int, default=100)
+    parser.add_argument("--frames", type=int, default=300)
+    parser.add_argument(
+        "--speed", type=float, default=10.0, help="bench flight speed, units per frame"
+    )
     args = parser.parse_args()
     if args.bench:
-        bench(args.frames)
+        bench(args.frames, args.speed)
     else:
         App()
