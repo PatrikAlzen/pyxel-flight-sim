@@ -79,18 +79,31 @@ class Hud:
         self.messages(plane, agl)
 
     def pitch_ladder(self, camera: Camera) -> None:
+        """Rungs every 10 degrees of elevation, straight ahead along the heading.
+
+        Each rung is the screen projection of a real direction, so the ladder
+        lines up with the horizon in any attitude, upside down included.
+        """
         w, h = pyxel.width, pyxel.height
-        cx = w / 2
-        tan_pitch = math.tan(camera.pitch)
-        shear = math.tan(camera.roll)
-        pyxel.clip(cx - 64, 22, 128, h - 50)
-        for degrees in range(-60, 61, 10):
-            y0 = h / 2 + (tan_pitch - math.tan(math.radians(degrees))) * self.focal
+        _, r, u = camera.basis()
+        sh, ch = math.sin(camera.heading), math.cos(camera.heading)
+        # Rungs run parallel to the horizon: along the level right-hand direction.
+        level_right = np.array([ch, sh, 0.0])
+        rx, ry = float(level_right @ r), -float(level_right @ u)
+        length = math.hypot(rx, ry) or 1.0
+        rx, ry = rx / length, ry / length
+        pyxel.clip(w / 2 - 64, 22, 128, h - 50)
+        for degrees in range(-90, 91, 10):
+            e = math.radians(degrees)
+            ahead = np.array([sh * math.cos(e), -ch * math.cos(e), math.sin(e)])
+            spot = camera.project_direction(ahead, self.focal, w, h)
+            if spot is None:
+                continue
+            cx, cy, _ = spot
             inner, outer = (14, 64) if degrees == 0 else (14, 34)
             for side in (-1, 1):
-                x1, x2 = cx + side * inner, cx + side * outer
-                y1 = y0 - (x1 - cx) * shear
-                y2 = y0 - (x2 - cx) * shear
+                x1, y1 = cx + side * inner * rx, cy + side * inner * ry
+                x2, y2 = cx + side * outer * rx, cy + side * outer * ry
                 if degrees < 0:  # dashed below the horizon
                     for t in (0.0, 0.4, 0.8):
                         a, b = t, min(t + 0.25, 1.0)
@@ -105,7 +118,7 @@ class Hud:
                     pyxel.line(x1, y1, x2, y2, HUD)
                 if degrees:
                     label = str(abs(degrees))
-                    lx = x2 + 2 if side > 0 else x2 - 2 - len(label) * 4
+                    lx = x2 + side * 3 - (len(label) * 4 if side < 0 else 0)
                     pyxel.text(lx, y2 - 2, label, HUD)
         pyxel.clip()
 

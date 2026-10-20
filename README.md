@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: idéerna i fas 7.
+> **Status:** fas 0–6 klara, plus full rotation: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: idéerna i fas 7.
 
 ---
 
@@ -36,7 +36,7 @@ Utanför scope (åtminstone initialt): realistisk aerodynamik, flera flygplansty
 |---|---|---|
 | Motor | Pyxel ≥ 2.9.9 | Fönster, input, ljud, palett och pixelbuffert ingår. |
 | Matematik | NumPy | Pyxel saknar riktig 3D. Terräng och rendering måste vektoriseras för att Python ska hinna med. |
-| 3D-teknik | **Voxel Space** (höjdkarta + raycasting per kolumn) | Ger bergig 3D-terräng billigt, passar perfekt ihop med en höjdkarta från brusfunktioner. |
+| 3D-teknik | **Voxel Space i vinkelrum** (höjdkarta + strålar per kompassriktning) | Ger bergig 3D-terräng billigt, passar perfekt ihop med en höjdkarta från brusfunktioner, och klarar alla orienteringar (se *Full rotation*). |
 | Bildöverföring | `pyxel.Image.data_ptr()` + NumPy | Hela bilden ritas i en NumPy-array och kopieras rakt in i Pyxels bildbuffert i ett svep, i stället för tusentals `pset`/`line`-anrop. |
 | Pakethantering | uv | Redan uppsatt i projektet (`pyproject.toml`, `uv.lock`). |
 
@@ -130,8 +130,16 @@ Den naiva dubbelslingan (kolumner × avståndssteg) är för långsam i ren Pyth
 
 ### Tipp och roll
 
-- **Tipp (pitch):** flytta horisontlinjen upp/ned (klassiskt Voxel Space-trick).
-- **Roll:** skjuv per kolumn – horisonten för kolumn `x` förskjuts med `(x - W/2) * tan(roll)`. Ser övertygande ut upp till ca ±45°. Vid större rollvinklar kan hela bilden roteras i efterhand (NumPy-indexering med förberäknad rotationstabell).
+*Ursprunglig plan (fas 2–6):* tipp flyttade horisontlinjen och roll skjuvade varje kolumn. Det drog ut terrängen i skärmkanterna vid stor roll och gjorde loopar omöjliga.
+
+### Full rotation (nuvarande renderare)
+
+Varje skärmpixels riktiga 3D-stråle (från kamerans fullständiga rotation) beskrivs med två vinklar: **azimut** (kompassriktning) och **lutning** (tangens av höjdvinkeln). Terrängen samplas utåt från kameran längs ett antal azimutriktningar. Längs varje riktning är skyline den brantaste lutning `(höjd − kamerahöjd) / avstånd` som setts hittills (`np.maximum.accumulate`). En pixel visar det närmaste sampel vars skyline når pixelns lutning, annars himmel. Skyline är monoton per riktning, så en enda global `searchsorted` hittar träffen för alla pixlar på en gång, precis som kolumntricket i den gamla renderaren.
+
+Kamerans rotation påverkar bara vilka vinklar pixlarna får. Därför fungerar alla orienteringar: full roll, ryggläge, rakt upp och rakt ned. Optimeringar som håller nere kostnaden när zenit eller nadir syns på skärmen (då är alla riktningar synliga):
+- **Räckvidd per riktning:** en stråle nedåt når havsytan inom `höjd / −lutning`, och en stråle uppåt passerar den högsta toppen inom `(topp − höjd) / lutning`. Toppen hämtas lokalt från en grov terrängnivå. Riktningarna grupperas i längdklasser (steg om 20 %), så att arbetet blir rektangulära arrayer.
+- **Startavstånd per riktning:** högt över alla toppar kan en stråle med lutning `s` inte träffa något närmare än `(höjd − topp) / −s`. Samplen nära kameran är tätast, så det sparar mest.
+- **Azimutnivåer:** pixlar nära fluktpunkten rakt upp eller ned delar grövre riktningar (1600, 800, … 100 runt hela varvet).
 
 ### Palett
 
@@ -304,7 +312,7 @@ Lärdomar:
 - **Terrängnivåer (LOD):** (utökat till fyra nivåer och 2500 enheters sikt i fas 6) tre nivåer i `config.TERRAIN_LEVELS`: 1024² celler med steg 1 (nära, upp till ~270 enheter), 1024² med steg 2 (till ~540) och 512² med steg 8 (till 700). Grövre nivåer längre bort ger både längre sikt och mindre flimmer. Renderaren väljer automatiskt den finaste nivå som täcker varje djupsteg.
 - **Ringbuffert:** varje nivå (`TerrainLevel`) lagrar världscell (x, y) på index `(x mod N, y mod N)`. Renderaren slår upp med en bitmask och behöver aldrig veta var fönstret ligger. I fas 3 räcker det därför att skriva över de tiles som scrollat ut.
 - **Dimma och himmel:** paletten har nu tre dimkopior av terrängfärgerna (klar, 35 %, 68 %) och 8 himmelsnyanser, totalt 204 färger. Dimnivån per pixel ditheras mellan kopiorna, och fullt dimmig terräng har exakt samma färg som himlen vid horisonten. Därför smälter fjärran berg in i himlen utan synlig kant.
-- **Tipp och roll** stöds redan i renderaren: tipp flyttar horisonten, roll skjuvar varje kolumn.
+- **Tipp och roll** stöds redan i renderaren: tipp flyttar horisonten, roll skjuvar varje kolumn. (Ersatt av full rotation efter fas 6.)
 - **Prestanda:** rendering 3,9 ms (p95 4,3 ms) med `uv run flightsim --bench`, ~5,6 ms i fönster. Spelet håller 30 FPS.
 - **Begränsning:** världen är än så länge statisk runt origo. Flyger man längre än ~400 enheter upprepas terrängen, eftersom ringbufferten aldrig fylls på. (Åtgärdat i fas 3.)
 
@@ -390,6 +398,32 @@ Lärdomar:
 - **Prestanda i fönster:** stabila 30 FPS. Inget update- eller draw-anrop tar över ~18 ms. Den enda längre bildrutan i provkörningen kom från att testskriptet sparade skärmbilder.
 - 14 nya tester (totalt 85).
 
+### Efter fas 6 – Full rotation: rolla och loopa ✅
+
+Önskemål: terrängen drogs ut lodrätt i skärmkanterna vid stor roll, och det skulle gå att rolla och loopa ett helt varv.
+
+- [x] Renderare som arbetar i vinkelrum i stället för skärmkolumner (se *Full rotation* under Rendering). Inget töjs vid roll, och ryggläge, rakt upp och rakt ned fungerar.
+- [x] Flygmodell utan gränser för tipp och roll.
+- [x] HUD, moln, jaktkamera och spökkamera för alla orienteringar.
+
+**Resultat:**
+- **Kamera** ([sim/camera.py](src/flightsim/sim/camera.py)): Eulervinklar (kurs, tipp i [−90°, 90°], roll i (−180°, 180°]) kan beskriva alla orienteringar. `basis()` ger fram-, höger- och uppvektorer, `set_vectors()` går åt andra hållet och `project()` projicerar punkter och riktningar. Fram och tillbaka är testat för slumpade orienteringar.
+- **Flygmodell:** orienteringen lagras som vektorerna `forward` (nos) och `up` (tak) och roteras runt planets egna axlar: tipp runt vingarna, roll runt nosen och girning runt taket. Vid ±90° tipp finns inget specialfall. `heading`, `pitch` och `roll` finns kvar som egenskaper med setters.
+  - Banksväng: lyftkraftens horisontella del vrider flygbanan, så planet svänger åt andra hållet i ryggläge.
+  - Lyftbehov: `cos(tipp) − lyft · up_z`. Det är 0 i planflykt och lodrät stigning, och i ryggläge drar lyftkraften nedåt, så man måste trycka spaken framåt.
+  - Autoutplaning av rollen sker bara under 60° bank, så att rollvarv och ryggflygning inte störs.
+  - Tipphastigheten är höjd till 1,2 rad/s, så att en loop går att flyga utan att först dyka.
+  - Ny kraschorsak: *LANDED UPSIDE DOWN*.
+- **Jaktkamera:** följer planets vektorer med eftersläpning och hänger därför med genom loopar. Spriten roteras med planets bank relativt kameran.
+- **Tipp-stege:** varje steg är projektionen av en riktig riktning (kurs, höjdvinkel), så stegen följer horisonten även upp och ned.
+- **Moln:** avståndet till molnlagret är `(molnhöjd − höjd) / lutning`. Opaciteten förberäknas i en 4× finare textur, så varje pixel gör ett uppslag i stället för bilinjär interpolation. Det sparade ~4 ms per bildruta.
+- **Prestanda** (rendering inklusive moln, utan fönster): planflygning ~7 ms, roll 60° ~9 ms, ryggläge ~7 ms, rakt ned ~10 ms, rakt upp mot berg ~15 ms och brant nedåt på hög höjd ~15 ms. I `--bench` (utan moln, med arbetsprocesser igång) tar planflygning ~11 ms mot ~4 ms med den gamla kolumnrenderaren. Full rotation kostar alltså ungefär dubbelt i det vanligaste fallet men ryms gott i budgeten.
+- **Provflugen i riktigt fönster** med inspelade tangenttryckningar: ett helt rollvarv, en loop i cockpitvyn och en i jaktkameran. Stabila 30 FPS hela vägen (medel 33,3 ms, max 38 ms).
+- 11 nya tester (totalt 96):
+  - Flygning: rollvarv, loop, ryggflygning, att orienteringen hålls ortonormal, landning upp och ned.
+  - Rendering: Euler ↔ vektorer, ryggläge, 90° roll, rakt ned och att roll inte drar ut kanterna.
+  - Jaktkamera: följer genom en loop.
+
 ### Fas 7 – Idéer för senare
 - Landningsbanor och flygplatser placerade procedurellt på plana ytor.
 - Ringar/checkpoints att flyga igenom, tidslopp.
@@ -405,7 +439,7 @@ Lärdomar:
 | Python för långsamt för Voxel Space | Full NumPy-vektorisering, rita till array och kopiera via `data_ptr()`. Fallback: lägre upplösning, färre avståndssteg, Numba. |
 | Hack när nya chunkar genereras | Löst i fas 3: arbetsprocesser (inte trådar – Pyxel håller GIL:en) och en halv tiles marginal i varje nivå. |
 | Begränsad palett ger platt utseende | Utökad palett + dithering + lutningsskuggning. |
-| Roll ser konstig ut vid stora vinklar | Skjuvning för små vinklar, bildrotation för stora. |
+| Roll ser konstig ut vid stora vinklar | Löst efter fas 6: renderaren arbetar i vinkelrum och klarar alla orienteringar. |
 | Flygmodellen känns fel | Alla konstanter i `config.py`, debug-överlägg med live-värden. |
 
 **Prestandabudget (30 FPS ⇒ 33 ms per bildruta):**

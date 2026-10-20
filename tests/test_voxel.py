@@ -88,3 +88,51 @@ def test_coarse_level_used_for_far_slices():
     assert [lvl for lvl, _ in ranges] == [fine, coarse]
     (_, near), (_, far) = ranges
     assert near.start == 0 and near.stop == far.start and far.stop == len(renderer.z)
+
+
+def test_euler_and_vectors_round_trip():
+    from flightsim.sim.camera import basis_to_euler, euler_to_basis
+
+    rng = np.random.default_rng(3)
+    for _ in range(200):
+        heading = rng.uniform(0, 2 * math.pi)
+        pitch = rng.uniform(-1.5, 1.5)
+        roll = rng.uniform(-math.pi, math.pi)
+        f, r, u = euler_to_basis(heading, pitch, roll)
+        assert np.allclose(np.cross(u, f), r)
+        h2, p2, r2 = basis_to_euler(f, u)
+        f2, _, u2 = euler_to_basis(h2, p2, r2)
+        assert np.allclose(f, f2) and np.allclose(u, u2)
+
+
+def test_upside_down_shows_ground_on_top():
+    out = render([flat_level()], Camera(altitude=20, roll=math.pi))
+    assert np.all(out[0] == GROUND)
+    assert is_sky(out[-H // 2 + 1 :]).all()
+
+
+def test_roll_ninety_puts_horizon_vertical():
+    out = render([flat_level()], Camera(altitude=20, roll=math.radians(90)))
+    # Right wing down: the ground is on the right half of the screen.
+    assert np.all(out[:, -1] == GROUND)
+    assert is_sky(out[:, : W // 2 - 1]).all()
+
+
+def test_looking_straight_down_sees_only_ground():
+    out = render([flat_level()], Camera(altitude=20, pitch=-math.pi / 2))
+    assert not is_sky(out).any()
+
+
+def test_roll_does_not_stretch_the_edges():
+    """Rolling is a rotation: a feature at the screen edge keeps its size."""
+    level = flat_level()
+    camera = Camera(x=0.5, y=0.5, altitude=20)
+    stripes = level.indices(0, np.arange(-60, -40))[0]
+    level.colors[stripes, :] = WALL
+    level_view = render([level], camera)
+    camera.roll = math.radians(60)
+    rolled = render([level], camera)
+    assert (
+        abs(int((rolled == WALL).sum()) - int((level_view == WALL).sum()))
+        < 0.15 * (level_view == WALL).sum()
+    )

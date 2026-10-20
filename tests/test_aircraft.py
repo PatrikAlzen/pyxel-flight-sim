@@ -81,10 +81,19 @@ def test_climbing_costs_speed_and_diving_gains_it():
 
 def test_stall_drops_the_nose_and_sinks():
     plane = flying(throttle=0.0, altitude=1000)
-    run(plane, 6.0, Controls(pitch=1, throttle=-1))
-    assert plane.speed < plane.settings.stall_speed
+    # Pull into a steep climb, then hold it with the stick centred and the
+    # engine idle until the speed runs out.
+    while plane.pitch < math.radians(60):
+        plane.update(Controls(pitch=1, throttle=-1), DT, flat)
+    lowest_pitch = plane.pitch
+    for _ in range(round(6 / DT)):
+        plane.update(Controls(throttle=-1), DT, flat)
+        lowest_pitch = min(lowest_pitch, plane.pitch)
+        if plane.stalling and plane.vertical_speed < -5:
+            break
     assert plane.stalling
     assert plane.vertical_speed < -5
+    assert lowest_pitch < math.radians(60)  # the nose has started to drop
     # Letting go: the nose falls through and the plane picks up speed again.
     run(plane, 6.0, Controls(throttle=1))
     assert plane.pitch < 0 or plane.speed > plane.settings.stall_speed
@@ -213,3 +222,72 @@ def test_taxiing_over_a_gentle_bump_is_fine_but_a_hillside_is_not():
             slope,
             plane.crash_reason,
         )
+
+
+def test_full_roll_goes_all_the_way_round():
+    plane = flying(altitude=800, speed=120, throttle=0.8)
+    start = plane.forward.copy()
+    inverted, turned = False, 0.0
+    for _ in range(round(4.0 / DT)):
+        plane.update(Controls(roll=1), DT, flat)
+        inverted |= plane.up[2] < -0.9
+        turned += plane.roll_rate * DT
+        if turned >= math.tau:
+            break
+    assert inverted
+    assert turned >= math.tau
+    assert plane.state is FlightState.FLYING
+    assert float(plane.forward @ start) > 0.8  # still flying roughly the same way
+
+
+def test_inside_loop():
+    plane = flying(altitude=800, speed=140, throttle=1.0)
+    start_heading = plane.heading
+    inverted, nose_up, turned = False, False, 0.0
+    for _ in range(round(15.0 / DT)):
+        plane.update(Controls(pitch=1), DT, flat)
+        inverted |= plane.up[2] < -0.8
+        nose_up |= plane.forward[2] > 0.95
+        turned += plane.pitch_rate * DT
+        if turned >= math.tau:
+            break
+    assert nose_up and inverted
+    assert turned >= math.tau
+    assert plane.state is FlightState.FLYING
+    # Back to wings level, pointing the original way.
+    assert plane.up[2] > 0.8
+    heading_error = (plane.heading - start_heading + math.pi) % math.tau - math.pi
+    assert abs(heading_error) < math.radians(25)
+
+
+def test_inverted_flight_needs_forward_stick():
+    upside_down = flying(altitude=800, speed=110, roll=math.pi)
+    run(upside_down, 2.0, Controls())
+    assert upside_down.vertical_speed < -15  # the lift pulls the wrong way
+    pushed = flying(altitude=800, speed=110, roll=math.pi)
+    lowest_vs = 0.0
+    for _ in range(round(2.0 / DT)):
+        pushed.update(Controls(pitch=-0.4), DT, flat)
+        lowest_vs = min(lowest_vs, pushed.vertical_speed)
+    assert lowest_vs > upside_down.vertical_speed
+
+
+def test_orientation_stays_orthonormal():
+    plane = flying(altitude=800, speed=130, throttle=1.0)
+    controls = [
+        Controls(pitch=1, roll=0.5),
+        Controls(roll=-1, yaw=1),
+        Controls(pitch=-1),
+    ]
+    for i in range(600):
+        plane.update(controls[i // 50 % 3], DT, flat)
+    assert float(plane.forward @ plane.forward) == pytest.approx(1)
+    assert float(plane.up @ plane.up) == pytest.approx(1)
+    assert float(plane.forward @ plane.up) == pytest.approx(0, abs=1e-9)
+
+
+def test_landing_upside_down_crashes():
+    plane = flying(altitude=FIELD + 3, speed=70, roll=math.pi)
+    run(plane, 3)
+    assert plane.state is FlightState.CRASHED
+    assert plane.crash_reason == "LANDED UPSIDE DOWN"

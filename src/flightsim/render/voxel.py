@@ -1,17 +1,33 @@
-"""Voxel Space terrain renderer, fully vectorised with NumPy.
+"""Voxel-style terrain renderer for any camera orientation, vectorised with NumPy.
 
-The classic algorithm walks from the camera outwards one depth slice at a
-time and, per screen column, draws the terrain from its projected height down
-to the highest point drawn so far (the "ybuffer"). Here every depth slice is
-handled at once instead:
+The classic Voxel Space algorithm draws one vertical slice of the world per
+screen column, which only works while the camera is upright: pitch and roll
+have to be faked by shifting and shearing the image. This renderer works in
+angles instead, so the camera can roll all the way round or fly upside down:
 
-1. Sample terrain for every (depth, column) pair and project it to a screen row.
-2. A running minimum along depth gives the occlusion line after each slice.
-3. Pixel (y, x) shows the nearest slice whose occlusion line reaches y. The
-   line is monotonic per column, so one global ``searchsorted`` over all
-   columns finds it for the whole screen.
+1. Every pixel's view ray is turned into two angles: its compass direction
+   (azimuth) and how far above or below the horizontal it points (elevation).
+2. Terrain is sampled outwards from the camera along a set of azimuths. For
+   each sample, the elevation angle at which it is seen is the angle from the
+   camera to the top of that terrain column.
+3. Along each azimuth, a running maximum of that angle is the skyline as seen
+   so far. A pixel shows the nearest sample whose skyline reaches the pixel's
+   elevation, or sky if none does. The skyline is monotonic per azimuth, so a
+   single global ``searchsorted`` finds this for every pixel at once.
 
-Distant slices read from coarser terrain levels, which both extends the view
+Only the camera's rotation decides which angles each pixel gets; the terrain
+side never needs to know about pitch or roll. Elevations are handled as their
+tangent, the slope (height difference / horizontal distance): it sorts the
+same way as the angle and costs a division instead of an arctangent.
+
+Each azimuth is only traced as far as its pixels can possibly see: a ray
+pointing down reaches sea level within ``altitude / tan(-elevation)``, and one
+pointing up passes above the highest peak within ``(peak - altitude) /
+tan(elevation)``. Azimuths are grouped into a few length classes so the work
+stays in rectangular arrays. This keeps views straight up or down, where every
+azimuth is on screen, about as cheap as looking at the horizon.
+
+Distant samples read from coarser terrain levels, which both extends the view
 distance and avoids shimmering from undersampling fine detail far away.
 """
 
@@ -43,21 +59,41 @@ _BAYER = (
     + 0.5
 ) / 16
 
+# Slopes are clamped to +-_MAX_SLOPE (about 89.9 degrees) and the keys of
+# different azimuths are spaced further apart than that range, so they never
+# overlap.
+_MAX_SLOPE = 1000.0
+_KEY_STRIDE = 4 * _MAX_SLOPE
+
 
 @dataclass(frozen=True)
 class RenderSettings:
     fov_degrees: float = 90.0
+    # Horizontal distance of the first and last terrain samples.
     z_near: float = 1.0
-    # Far enough to see the ground when flying well above the mountains.
     z_far: float = 2500.0
-    # Depth step starts at dz_start and grows by dz_growth per slice: dense
-    # sampling close to the camera, sparse far away.
+    # Sample spacing starts at dz_start and grows by dz_growth per step:
+    # dense close to the camera, sparse far away.
     dz_start: float = 0.5
     dz_growth: float = 1.02
     # Fog starts at this fraction of z_far and is complete at z_far.
     fog_start: float = 0.25
-    # Sky gradient spans this many pixels above the horizon.
-    sky_span: float = 110.0
+    # The sky gradient spans this many degrees above the horizon.
+    sky_span_degrees: float = 40.0
+    # Azimuth resolution: directions sampled around the full circle. About two
+    # per pixel at the screen centre, so the edges are not undersampled.
+    azimuths: int = 1600
+    # Pixels near the point straight above or below the camera share coarser
+    # azimuths: a pixel rho pixels from it needs about 2 pi rho of them around
+    # the circle, times this factor.
+    azimuths_per_pixel: float = 1.0
+    azimuth_tiers: int = 5  # full resolution and this many halvings minus one
+    # No terrain surface is lower than this (sea level). Looking down, rays
+    # cannot travel further than it allows, so fewer samples are needed.
+    lowest_surface: float = 0.0
+    # Added to the highest height found in the terrain levels, since peaks can
+    # fall between the samples of the coarse level used to find it.
+    peak_margin: float = 40.0
     # Water waves: shade shift amplitude (in shade steps) and wave speed.
     wave_strength: float = 0.7
     wave_speed: float = 1.5
@@ -76,49 +112,64 @@ class VoxelRenderer:
             zs.append(z)
             z += dz
             dz *= s.dz_growth
-        self.z = np.array(zs, dtype=np.float64)
+        self.z = np.array(zs, dtype=np.float64)  # horizontal sample distances
 
         half_fov = math.tan(math.radians(s.fov_degrees) / 2)
         self.focal = width / 2 / half_fov
-        # Horizontal offset of each column's ray, per unit of depth.
-        self.spread = ((np.arange(width) + 0.5) / width * 2 - 1) * half_fov
-        self.column_offset = np.arange(width) + 0.5 - width / 2
+        # Each pixel's offset from the view axis, in units of the focal length.
+        self._px = ((np.arange(width) + 0.5 - width / 2) / self.focal)[None, :]
+        self._py = (-(np.arange(height) + 0.5 - height / 2) / self.focal)[:, None]
 
         self.dither = np.tile(_BAYER, (height // 4 + 1, width // 4 + 1))[
             :height, :width
         ]
-        # Continuous fog level per depth slice, 0 (clear) .. FOG_LEVELS (sky).
+        # Continuous fog level per sample distance, 0 (clear) .. FOG_LEVELS (sky).
         self.fog = self.fog_for(self.z)
+        self._sx = (np.arange(width) + 0.5)[None, :]
+        self._sy = (np.arange(height) + 0.5)[:, None]
 
-        self._cols = np.arange(width)
-        self._rows = np.arange(height)[:, None]
-        self._stride = height + 2
-        self._key_base = self._cols * self._stride
-        self._queries = (self._key_base[None, :] - self._rows).ravel()
+        # Azimuth bins of all tiers in one numbering: tier t has azimuths / 2^t
+        # bins and starts at _tier_offset[t].
+        sizes = [s.azimuths >> t for t in range(s.azimuth_tiers)]
+        self._tier_size = np.array(sizes)
+        self._tier_offset = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+        self._bin_angle = np.concatenate(
+            [(np.arange(n) + 0.5) * math.tau / n for n in sizes]
+        )
+
+        # Sample counts azimuths are rounded up to, so each class is one array.
+        # Steps of 20% waste little work on rounding up.
+        n = len(self.z)
+        self._lengths = np.unique(np.maximum(1, np.round(n * 0.8 ** np.arange(24))))
+        self._lengths = self._lengths.astype(np.int64)
+
+        # Filled in by render() for overlays that need per-pixel geometry.
+        self.pixel_azimuth = np.zeros((height, width))
+        self.pixel_slope = np.zeros((height, width))
+        self.pixel_distance = np.full((height, width), np.inf)
+
+    def fog_for(self, z: np.ndarray) -> np.ndarray:
+        """Continuous fog level for distance ``z``: 0 (clear) .. FOG_LEVELS (sky)."""
+        s = self.settings
+        return smoothstep(s.fog_start * s.z_far, s.z_far, z) * palette.FOG_LEVELS
 
     def depth_ranges(
-        self, levels: Sequence[TerrainLevel]
+        self, levels: Sequence[TerrainLevel], count: int | None = None
     ) -> list[tuple[TerrainLevel, slice]]:
-        """Assign each depth slice to the finest level whose window still covers it.
-
-        A ray at depth z can reach z * sqrt(1 + spread^2) from the camera; it
-        must stay within the level's ``safe_radius``.
-        """
-        reach = self.z * math.hypot(1.0, float(self.spread[-1]))
+        """Assign each sample distance to the finest level whose window covers it."""
+        count = len(self.z) if count is None else count
         ranges, start = [], 0
         for i, level in enumerate(levels):
             last = i == len(levels) - 1
-            limit = level.safe_radius
-            end = len(self.z) if last else int(np.searchsorted(reach, limit))
+            end = (
+                count
+                if last
+                else min(count, int(np.searchsorted(self.z, level.safe_radius)))
+            )
             if end > start:
                 ranges.append((level, slice(start, end)))
                 start = end
         return ranges
-
-    def fog_for(self, z: np.ndarray) -> np.ndarray:
-        """Continuous fog level for depth ``z``: 0 (clear) .. FOG_LEVELS (sky)."""
-        s = self.settings
-        return smoothstep(s.fog_start * s.z_far, s.z_far, z) * palette.FOG_LEVELS
 
     def render(
         self,
@@ -133,63 +184,164 @@ class VoxelRenderer:
         ``levels`` go from finest to coarsest; each should be centred near the camera.
         ``time`` in seconds drives the water waves and cloud drift.
 
-        Afterwards ``pixel_depth`` holds the depth of the terrain seen in each
-        pixel (infinite for sky) and ``horizon`` the horizon row per column,
-        for anything drawn on top that needs to be hidden behind terrain.
+        Afterwards ``pixel_azimuth``, ``pixel_slope`` (tangent of the elevation
+        angle) and ``pixel_distance``
+        (horizontal distance to the terrain, infinite for sky) describe what
+        each pixel looks at, for overlays that must hide behind terrain.
         """
-        n_z = len(self.z)
-        z = self.z[:, None]
-        fx, fy = camera.forward
-        rx, ry = camera.right
-        lateral = z * self.spread[None, :]
-        wx = camera.x + z * fx + lateral * rx
-        wy = camera.y + z * fy + lateral * ry
+        s = self.settings
+        azimuth, slope = self._pixel_angles(camera)
 
-        heights = np.empty((n_z, self.width), dtype=np.float32)
-        colors = np.empty((n_z, self.width), dtype=np.uint8)
-        for level, rows in self.depth_ranges(levels):
-            iy, ix = level.indices(wx[rows], wy[rows])
-            heights[rows] = level.heights[iy, ix]
-            colors[rows] = level.colors[iy, ix]
-        self._animate_water(colors, wx, wy, time)
-
-        # Pitch moves the horizon up and down; roll tilts it by shearing columns.
-        horizon = (
-            self.height / 2
-            + math.tan(camera.pitch) * self.focal
-            - self.column_offset * math.tan(camera.roll)
+        # Azimuth bins present on screen, renumbered 0..k-1.
+        tier = self._pixel_tiers(camera)
+        size = self._tier_size[tier]
+        bins = (
+            self._tier_offset[tier]
+            + (azimuth * size / math.tau).astype(np.int64) % size
         )
-        screen_y = horizon[None, :] + (camera.altitude - heights) / z * self.focal
-        top = np.clip(np.ceil(screen_y), -1, self.height).astype(np.int32)
-        occlusion = np.minimum.accumulate(top, axis=0)
+        present = np.bincount(bins.ravel(), minlength=len(self._bin_angle)) > 0
+        used = np.flatnonzero(present)
+        pixel_bin = (np.cumsum(present) - 1)[bins]
 
-        # Per column, -occlusion is ascending in depth; offsetting each column
-        # by its own key range makes the whole array sorted for searchsorted.
-        keys = (self._key_base[:, None] - occlusion.T).ravel()
-        depth = np.searchsorted(keys, self._queries).reshape(self.height, self.width)
-        depth -= self._cols * n_z
-        is_sky = depth >= n_z
-        depth = np.minimum(depth, n_z - 1)
+        # How many samples each azimuth needs, rounded up to a length class.
+        # First bound the reach with the highest point anywhere in the coarsest
+        # level, then tighten it with the highest point actually within reach.
+        coarse = levels[-1]
+        peak = float(coarse.heights.max()) + s.peak_margin
+        reach = self._pixel_reach(slope, camera.altitude, peak)
+        radius = float(np.max(reach, initial=0.0, where=np.isfinite(reach)))
+        if np.isfinite(reach).all():
+            peak = local_peak(levels, camera.x, camera.y, radius) + s.peak_margin
+            reach = self._pixel_reach(slope, camera.altitude, peak)
+        bin_reach = np.zeros(len(used))
+        np.maximum.at(bin_reach, pixel_bin.ravel(), reach.ravel())
+        end = np.minimum(np.searchsorted(self.z, bin_reach) + 1, len(self.z))
 
-        fog_level = np.floor(self.fog[depth] + self.dither).astype(np.int32)
-        ground = (
-            colors[depth, self._cols].astype(np.int32)
-            + fog_level * palette.TERRAIN_COLORS
-        )
+        # Flying above every nearby peak, terrain close by is seen at a steep
+        # downward slope; anything shallower than an azimuth's steepest pixel
+        # cannot be hit, so its samples can start further out.
+        steepest = np.full(len(used), np.inf)
+        np.minimum.at(steepest, pixel_bin.ravel(), slope.ravel())
+        clearance = camera.altitude - peak
+        with np.errstate(divide="ignore"):
+            start_distance = np.where(
+                (clearance > 0) & (steepest < 0), clearance / -steepest, 0.0
+            )
+        first = np.maximum(np.searchsorted(self.z, start_distance) - 1, 0)
+        needed = np.maximum(end - first, 1)
+        length_class = np.searchsorted(self._lengths, needed)
+
+        # Lay the azimuths out class by class: rank is the position in that layout.
+        order = np.argsort(length_class, kind="stable")
+        rank = np.empty_like(order)
+        rank[order] = np.arange(len(order))
+        lengths = self._lengths[length_class[order]]
+        starts = np.concatenate([[0], np.cumsum(lengths)[:-1]])
+
+        keys, colors, samples = [], [], []
+        for cls in np.unique(length_class):
+            members = order[length_class[order] == cls]
+            n_d = int(self._lengths[cls])
+            index = np.minimum(
+                first[members, None] + np.arange(n_d)[None, :], len(self.z) - 1
+            )
+            d = self.z[index]
+            angle = self._bin_angle[used[members]]
+            wx = camera.x + np.sin(angle)[:, None] * d
+            wy = camera.y - np.cos(angle)[:, None] * d
+            heights = np.empty(wx.shape, dtype=np.float32)
+            cls_colors = np.empty(wx.shape, dtype=np.uint8)
+            for level, span in self.depth_ranges(levels):
+                if span.start == 0 and index[:, -1].max() < span.stop:
+                    mask = slice(None)  # the whole class fits in this level
+                else:
+                    mask = (index >= span.start) & (index < span.stop)
+                    if not mask.any():
+                        continue
+                iy, ix = level.indices(wx[mask], wy[mask])
+                heights[mask] = level.heights[iy, ix]
+                cls_colors[mask] = level.colors[iy, ix]
+            self._animate_water(cls_colors, wx, wy, time)
+            # Skyline per azimuth: the steepest slope seen so far outwards.
+            skyline = np.maximum.accumulate(
+                np.clip((heights - camera.altitude) / d, -_MAX_SLOPE, _MAX_SLOPE),
+                axis=1,
+            )
+            keys.append((skyline + rank[members, None] * _KEY_STRIDE).ravel())
+            colors.append(cls_colors.ravel())
+            samples.append(index.ravel())
+        keys = np.concatenate(keys)
+        colors = np.concatenate(colors)
+        samples = np.concatenate(samples)
+
+        pixel_rank = rank[pixel_bin]
+        found = np.searchsorted(keys, (slope + pixel_rank * _KEY_STRIDE).ravel())
+        found = found.reshape(self.height, self.width) - starts[pixel_rank]
+        is_sky = found >= lengths[pixel_rank]
+        flat = starts[pixel_rank] + np.minimum(found, lengths[pixel_rank] - 1)
+        hit = samples[flat]
+
+        fog_level = np.floor(self.fog[hit] + self.dither).astype(np.int32)
+        ground = colors[flat].astype(np.int32) + fog_level * palette.TERRAIN_COLORS
         ground = np.where(fog_level >= palette.FOG_LEVELS, palette.SKY_BASE, ground)
 
-        above = (horizon[None, :] - self._rows) / self.settings.sky_span
-        sky_level = np.floor(above * (palette.SKY_COLORS - 1) + self.dither)
+        span = math.radians(s.sky_span_degrees)
+        sky_level = np.floor(
+            np.arctan(slope) / span * (palette.SKY_COLORS - 1) + self.dither
+        )
         sky = palette.SKY_BASE + np.clip(sky_level, 0, palette.SKY_COLORS - 1).astype(
             np.int32
         )
 
         image = np.where(is_sky, sky, ground)
-        self.horizon = horizon
-        self.pixel_depth = np.where(is_sky, np.inf, self.z[depth])
+        self.pixel_azimuth = azimuth
+        self.pixel_slope = slope
+        self.pixel_distance = np.where(is_sky, np.inf, self.z[hit])
         if clouds is not None:
             clouds.draw(image, self, camera, time)
         out[:] = image
+
+    def _pixel_angles(self, camera: Camera) -> tuple[np.ndarray, np.ndarray]:
+        """Azimuth (clockwise from north, [0, 2pi)) and slope of every pixel's ray."""
+        f, r, u = camera.basis()
+        rx = f[0] + self._px * r[0] + self._py * u[0]
+        ry = f[1] + self._px * r[1] + self._py * u[1]
+        rz = f[2] + self._px * r[2] + self._py * u[2]
+        azimuth = np.arctan2(rx, -ry) % math.tau
+        with np.errstate(divide="ignore", invalid="ignore"):
+            slope = np.clip(rz / np.hypot(rx, ry), -_MAX_SLOPE, _MAX_SLOPE)
+        return azimuth, np.nan_to_num(slope)
+
+    def _pixel_tiers(self, camera: Camera) -> np.ndarray:
+        """Azimuth tier per pixel: 0 = full resolution, higher = coarser.
+
+        Around the point on screen straight above or below the camera, the
+        azimuth changes quickly from pixel to pixel, so pixels close to it
+        need far fewer distinct azimuths than the full resolution.
+        """
+        s = self.settings
+        f, r, u = camera.basis()
+        vertical = np.array([0.0, 0.0, 1.0 if f[2] >= 0 else -1.0])
+        depth = float(vertical @ f)
+        if depth < 1e-3:
+            return np.zeros((self.height, self.width), dtype=np.int64)
+        vx = self.width / 2 + float(vertical @ r) / depth * self.focal
+        vy = self.height / 2 - float(vertical @ u) / depth * self.focal
+        rho = np.hypot(self._sx - vx, self._sy - vy)
+        needed = np.maximum(math.tau * rho * s.azimuths_per_pixel, 1.0)
+        tier = np.floor(np.log2(s.azimuths / needed)).astype(np.int64)
+        return np.clip(tier, 0, s.azimuth_tiers - 1)
+
+    def _pixel_reach(
+        self, slope: np.ndarray, altitude: float, peak: float
+    ) -> np.ndarray:
+        """Furthest horizontal distance at which each pixel's ray can meet terrain."""
+        above = altitude - self.settings.lowest_surface  # room to fall before sea level
+        below_peak = peak - altitude  # room to climb before clearing every peak
+        with np.errstate(divide="ignore"):
+            down = above / -slope if above > 0 else np.inf
+            up = below_peak / slope if below_peak > 0 else 0.0
+        return np.where(slope < 0, down, np.where(slope > 0, up, np.inf))
 
     def _animate_water(
         self, colors: np.ndarray, wx: np.ndarray, wy: np.ndarray, time: float
@@ -213,3 +365,21 @@ class VoxelRenderer:
         offset = offset[water]
         shade = np.clip(offset % palette.SHADES + shift, 0, palette.SHADES - 1)
         colors[water] = palette.TERRAIN_BASE + offset - offset % palette.SHADES + shade
+
+
+def local_peak(
+    levels: Sequence[TerrainLevel], x: float, y: float, radius: float
+) -> float:
+    """Highest stored terrain within ``radius`` of (x, y), from a coarse level.
+
+    Uses the finest level whose window holds the whole square, falling back to
+    the entire coarsest level.
+    """
+    for level in levels[1:]:
+        if radius <= level.safe_radius:
+            cells = int(radius / level.step) + 2
+            iy, ix = level.indices(x, y)
+            rows = (iy + np.arange(-cells, cells + 1)) & level.mask
+            cols = (ix + np.arange(-cells, cells + 1)) & level.mask
+            return float(level.heights[np.ix_(rows, cols)].max())
+    return float(levels[-1].heights.max())

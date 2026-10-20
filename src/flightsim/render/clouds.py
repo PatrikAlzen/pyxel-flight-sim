@@ -1,12 +1,11 @@
 """A layer of flat clouds at a fixed altitude, drawn over the terrain view.
 
-Each screen pixel's ray is intersected with the cloud plane using the same
-projection as the terrain renderer: a point at depth z and height h appears
-``(camera altitude - h) / z * focal`` pixels below the horizon, so a pixel
-``dy`` below the horizon meets the plane at ``z = (camera altitude - cloud
-altitude) * focal / dy``. That works from below (rows above the horizon) and
-from above (rows below it). Comparing z with the terrain depth in the same
-pixel hides clouds behind mountains and lets high peaks poke through.
+Each screen pixel's ray is intersected with the cloud plane using the angles
+the terrain renderer already computed: a ray with slope s (tangent of its
+elevation angle) reaches the plane after the horizontal distance ``(cloud
+altitude - camera altitude) / s``, if that is positive. That works from below, from above and upside
+down. Comparing the distance with the terrain distance in the same pixel
+hides clouds behind mountains and lets high peaks poke through.
 """
 
 from dataclasses import dataclass
@@ -17,6 +16,8 @@ from flightsim.render import palette
 from flightsim.sim.camera import Camera
 from flightsim.terrain.biomes import Biome
 from flightsim.terrain.noise import FractalNoise
+
+_UPSAMPLE = 4  # fine opacity texels per density texel along each side
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,28 @@ class CloudLayer:
         # Density above which a texel is cloud, chosen to give the coverage.
         self.threshold = float(np.quantile(self.density, 1 - s.coverage))
 
+        # Opacity bilinearly upsampled once to a finer grid, so drawing needs a
+        # single lookup per pixel instead of four plus interpolation.
+        fine = s.texture_size * _UPSAMPLE
+        self.fine_cell = s.cell / _UPSAMPLE
+        self.fine_mask = fine - 1
+        coords = np.arange(fine) * self.fine_cell
+        self.opacity = self._filtered(coords[None, :], coords[:, None]).astype(
+            np.float32
+        )
+
     def coverage_at(self, x: np.ndarray, y: np.ndarray, time: float) -> np.ndarray:
-        """Cloud opacity in [0, 1] at world positions, bilinearly filtered."""
+        """Cloud opacity in [0, 1] at world positions, drifting with the wind."""
         s = self.settings
-        u = (x + s.drift[0] * time) / s.cell
-        v = (y + s.drift[1] * time) / s.cell
+        iu = np.floor((x + s.drift[0] * time) / self.fine_cell).astype(np.int64)
+        iv = np.floor((y + s.drift[1] * time) / self.fine_cell).astype(np.int64)
+        return self.opacity[iv & self.fine_mask, iu & self.fine_mask]
+
+    def _filtered(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Opacity at texture-space positions, bilinearly filtered."""
+        s = self.settings
+        u = x / s.cell
+        v = y / s.cell
         u0, v0 = np.floor(u), np.floor(v)
         fu, fv = u - u0, v - v0
         iu, iv = u0.astype(np.int64) & self.mask, v0.astype(np.int64) & self.mask
@@ -61,22 +79,19 @@ class CloudLayer:
         height = camera.altitude - s.altitude  # > 0 when flying above the clouds
         if abs(height) < 1e-3:
             return
-        dy = renderer._rows - renderer.horizon[None, :]
         with np.errstate(divide="ignore"):
-            z = height * renderer.focal / dy
+            z = -height / renderer.pixel_slope
         z_far = renderer.settings.z_far * s.range_factor
         visible = (z > renderer.settings.z_near) & (z < z_far)
-        visible &= z < renderer.pixel_depth
+        visible &= z < renderer.pixel_distance
         rows, cols = np.nonzero(visible)
         if rows.size == 0:
             return
 
         z = z[rows, cols]
-        fx, fy = camera.forward
-        rx, ry = camera.right
-        lateral = z * renderer.spread[cols]
+        azimuth = renderer.pixel_azimuth[rows, cols]
         opacity = self.coverage_at(
-            camera.x + z * fx + lateral * rx, camera.y + z * fy + lateral * ry, time
+            camera.x + z * np.sin(azimuth), camera.y - z * np.cos(azimuth), time
         )
         dither = renderer.dither[rows, cols]
         drawn = opacity > dither

@@ -45,14 +45,13 @@ from flightsim.render.worldmap import (
 )
 from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
-from flightsim.sim.chase import ChaseCamera, project
+from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
 W, H = config.SCREEN_W, config.SCREEN_H
 DT = 1 / config.FPS
-MAX_PITCH = math.radians(45)
-MAX_ROLL = math.radians(45)
+MAX_PITCH = math.radians(89)  # ghost camera; it can roll freely
 TITLE_MAP_STEP = 32
 PAUSE_ITEMS = ["RESUME", "RESPAWN", "NEW WORLD", "QUIT"]
 
@@ -294,7 +293,7 @@ class App:
             return
         cam.x, cam.y = plane.x, plane.y
         cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
-        cam.heading, cam.pitch, cam.roll = plane.heading, plane.pitch, plane.roll
+        cam.set_vectors(plane.forward, plane.up)
 
     def watch_crash_site(self) -> None:
         """Look at the crash from behind and above, outside any hillside."""
@@ -332,7 +331,7 @@ class App:
         if pyxel.btnp(pyxel.KEY_V):
             cam.pitch = cam.roll = 0.0
         cam.pitch = max(-MAX_PITCH, min(MAX_PITCH, cam.pitch))
-        cam.roll = max(-MAX_ROLL, min(MAX_ROLL, cam.roll))
+        cam.roll = (cam.roll + math.pi) % math.tau - math.pi
 
         ground = self.world.height_at(cam.x, cam.y)
         cam.altitude = max(cam.altitude, ground + config.GHOST_CLEARANCE)
@@ -382,7 +381,8 @@ class App:
     def draw_plane(self) -> None:
         """The aircraft sprite as seen from the chase camera."""
         plane, cam = self.aircraft, self.camera
-        spot = project(cam, self.renderer.focal, W, H, plane.x, plane.y, plane.altitude)
+        position = np.array([plane.x, plane.y, plane.altitude])
+        spot = cam.project(position, self.renderer.focal, W, H)
         if spot is None:
             return
         x, y, _ = spot
@@ -396,7 +396,7 @@ class App:
             img.width,
             img.height,
             TRANSPARENT,
-            rotate=math.degrees(plane.roll - cam.roll),
+            rotate=sprite_angle(plane, cam),
         )
 
     def draw_title(self) -> None:

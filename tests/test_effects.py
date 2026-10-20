@@ -12,7 +12,7 @@ from flightsim.render.sprites import _COLORS, PLANE_REAR
 from flightsim.render.voxel import RenderSettings, VoxelRenderer
 from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 from flightsim.sim.camera import Camera
-from flightsim.sim.chase import ChaseCamera, project
+from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.terrain.biomes import Biome
 from flightsim.terrain.world import TerrainLevel
 
@@ -94,11 +94,28 @@ def test_chase_camera_stays_above_ground():
 def test_plane_projects_ahead_of_chase_camera():
     p, cam = plane(), Camera()
     ChaseCamera().update(p, cam, 1 / 30, flat)
-    x, y, depth = project(cam, 128, 256, 144, p.x, p.y, p.altitude)
+    x, y, depth = cam.project(np.array([p.x, p.y, p.altitude]), 128, 256, 144)
     assert x == pytest.approx(128)
-    assert 72 < y < 144  # below the horizon: the camera looks down at it
+    assert 72 < y < 144  # below the centre: the camera looks down at it
     assert depth == pytest.approx(26, abs=1)
-    assert project(cam, 128, 256, 144, cam.x, cam.y + 50, 0) is None  # behind
+    behind = np.array([cam.x, cam.y + 50, 0.0])  # the camera faces north (-y)
+    assert cam.project(behind, 128, 256, 144) is None
+
+
+def test_chase_camera_follows_through_a_loop():
+    p, cam, chase = (
+        plane(altitude=800, speed=140, throttle=1.0),
+        Camera(),
+        ChaseCamera(),
+    )
+    from flightsim.sim.aircraft import Controls
+
+    for _ in range(150):
+        p.update(Controls(pitch=1), 1 / 30, flat)
+        chase.update(p, cam, 1 / 30, flat)
+        x, y, _ = cam.project(np.array([p.x, p.y, p.altitude]), 128, 256, 144)
+        assert 0 <= x < 256 and 0 <= y < 144  # the plane never leaves the view
+        assert abs(sprite_angle(p, cam)) < 30  # and stays nearly upright in it
 
 
 def test_plane_sprite_is_rectangular_and_known_colors():

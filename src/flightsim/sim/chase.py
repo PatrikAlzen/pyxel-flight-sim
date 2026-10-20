@@ -1,7 +1,15 @@
-"""Chase camera: follows the aircraft from behind with a little lag."""
+"""Chase camera: follows the aircraft from behind with a little lag.
+
+The camera keeps its own forward and up vectors and eases them towards the
+plane's, so it follows through loops and rolls without any special cases. It
+sits behind and above the plane in its own frame, which keeps the plane at the
+same spot on screen; the lag shows up as the plane rotating against the view.
+"""
 
 import math
 from dataclasses import dataclass
+
+import numpy as np
 
 from flightsim.sim.aircraft import Aircraft
 from flightsim.sim.camera import Camera
@@ -9,63 +17,52 @@ from flightsim.sim.camera import Camera
 
 @dataclass(frozen=True)
 class ChaseSettings:
-    distance: float = 26.0  # behind the plane, along its flight path
-    height: float = 6.0  # above it
+    distance: float = 26.0  # behind the plane
+    height: float = 6.0  # above it, in the camera's own up direction
     look_down: float = math.radians(8)
-    heading_lag: float = 4.0  # per second; higher follows turns more tightly
-    roll_share: float = 0.4  # how much of the plane's bank the camera copies
-    pitch_share: float = 0.6
+    lag: float = 4.0  # per second; higher follows the plane more tightly
     clearance: float = 3.0  # minimum camera height above the ground
 
 
 class ChaseCamera:
     def __init__(self, settings: ChaseSettings | None = None) -> None:
         self.settings = settings or ChaseSettings()
-        self.heading: float | None = None
+        self.forward: np.ndarray | None = None
+        self.up: np.ndarray | None = None
 
     def reset(self) -> None:
         """Snap straight behind the plane on the next update (e.g. after a respawn)."""
-        self.heading = None
+        self.forward = self.up = None
 
     def update(self, plane: Aircraft, camera: Camera, dt: float, ground) -> None:
         s = self.settings
-        if self.heading is None:
-            self.heading = plane.heading
-        # Ease the heading towards the plane's along the shortest way round.
-        diff = (plane.heading - self.heading + math.pi) % math.tau - math.pi
-        self.heading = (self.heading + diff * min(1.0, s.heading_lag * dt)) % math.tau
+        # Aim slightly below the plane's nose so the plane sits low in the view.
+        c, si = math.cos(s.look_down), math.sin(s.look_down)
+        target_f = plane.forward * c - plane.up * si
+        target_u = plane.up * c + plane.forward * si
+        if self.forward is None:
+            self.forward, self.up = target_f, target_u
+        else:
+            k = min(1.0, s.lag * dt)
+            f = self.forward + (target_f - self.forward) * k
+            u = self.up + (target_u - self.up) * k
+            f /= np.linalg.norm(f)
+            u -= f * float(u @ f)
+            self.forward, self.up = f, u / np.linalg.norm(u)
 
-        fx, fy = math.sin(self.heading), -math.cos(self.heading)
-        back = s.distance * math.cos(plane.pitch)
-        camera.x = plane.x - fx * back
-        camera.y = plane.y - fy * back
-        camera.altitude = plane.altitude + s.height - s.distance * math.sin(plane.pitch)
-        camera.altitude = max(camera.altitude, ground(camera.x, camera.y) + s.clearance)
-        camera.heading = self.heading
-        camera.pitch = plane.pitch * s.pitch_share - s.look_down
-        camera.roll = plane.roll * s.roll_share
+        position = (
+            np.array([plane.x, plane.y, plane.altitude])
+            - self.forward * s.distance
+            + self.up * s.height
+        )
+        camera.x, camera.y = float(position[0]), float(position[1])
+        camera.altitude = max(
+            float(position[2]), ground(camera.x, camera.y) + s.clearance
+        )
+        camera.set_vectors(self.forward, self.up)
 
 
-def project(
-    camera: Camera, focal: float, width: int, height: int, x: float, y: float, z: float
-):
-    """Screen position of world point (x, y, altitude z), or None if behind the camera.
-
-    Uses the same model as the voxel renderer: depth along the view direction,
-    horizon moved by pitch and sheared by roll.
-    """
-    dx, dy = x - camera.x, y - camera.y
-    fx, fy = camera.forward
-    rx, ry = camera.right
-    depth = dx * fx + dy * fy
-    if depth <= 1.0:
-        return None
-    lateral = dx * rx + dy * ry
-    sx = width / 2 + lateral / depth * focal
-    horizon = (
-        height / 2
-        + math.tan(camera.pitch) * focal
-        - (sx - width / 2) * math.tan(camera.roll)
-    )
-    sy = horizon + (camera.altitude - z) / depth * focal
-    return sx, sy, depth
+def sprite_angle(plane: Aircraft, camera: Camera) -> float:
+    """Degrees to rotate the plane sprite (clockwise) to match its bank in the view."""
+    _, right, up = camera.basis()
+    return math.degrees(math.atan2(float(plane.up @ right), float(plane.up @ up)))
