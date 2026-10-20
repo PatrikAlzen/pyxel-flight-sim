@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0 klar (grund + renderingsspik). Nästa steg: fas 1, brus och 2D-karta.
+> **Status:** fas 0–1 klara (renderingsspik, terränggenerering och kartvy). Nästa steg: fas 2, Voxel Space-renderaren.
 
 ---
 
@@ -219,9 +219,11 @@ pyxel-flight-sim/
 │       ├── app.py             # Pyxel-appen: init, update, draw, spellägen
 │       ├── config.py          # upplösning, seed, konstanter för flygmodell och rendering
 │       ├── spike.py           # fas 0-spik (tillfällig), ersätts av render/voxel.py
+│       ├── mapview.py         # debugkarta ovanifrån för att finjustera terrängen
 │       ├── terrain/
 │       │   ├── noise.py       # vektoriserat gradientbrus, fbm, ridged, domain warp
 │       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
+│       │   ├── biomes.py      # biomtyper och regler för att välja biom
 │       │   ├── world.py       # chunk-cache (LRU), lokalt fönster, höjdfråga för kollision
 │       │   └── shading.py     # lutningsbaserad ljussättning
 │       ├── render/
@@ -265,10 +267,18 @@ Lärdomar:
 - Python 3.14.0a4 (alfa) fungerar inte med NumPy-hjulen. Använd en stabil 3.14.x (projektet kör 3.14.8 via uv).
 - Spiken (`src/flightsim/spike.py`) är slit-och-släng-kod. Voxel-algoritmen därifrån flyttas till `render/voxel.py` i fas 2.
 
-### Fas 1 – Brus och 2D-karta
-- [ ] Implementera `noise.py` (gradientbrus + fbm + ridged) med tester.
-- [ ] `generator.py`: höjd, fuktighet, biom, färg och skuggning för en chunk.
-- [ ] Debugvy: scrollbar ovanifrån-karta av terrängen (piltangenter). Bra för att finjustera världens utseende innan 3D finns.
+### Fas 1 – Brus och 2D-karta ✅
+- [x] Implementera `noise.py` (gradientbrus + fbm + ridged) med tester.
+- [x] `generator.py`: höjd, fuktighet, biom, färg och skuggning för en chunk.
+- [x] Debugvy: scrollbar ovanifrån-karta av terrängen (piltangenter). Bra för att finjustera världens utseende innan 3D finns.
+
+**Resultat:**
+- `uv run flightsim-map` öppnar kartvyn. Den har panorering, zoom 1:1–1:64, lagren terräng/biom/fuktighet, byte av seed och info om höjd, biom och fuktighet där musen pekar.
+- Höjden består av lager: kontinenter med domain warping, ett höjdsteg vid kusten, ridged-berg (bara inåt land och där en bergskedjemask tillåter) och kullar. Sea level = 0, toppar på ~300 enheter. Alla parametrar finns i `TerrainSettings`.
+- 10 biom (djupt/grunt vatten, sand, gräs, skog, stäpp, öken, taiga, klippa, snö) väljs från höjd, fuktighet och lutning. Brant terräng blir klippa oavsett höjd.
+- Paletten har 76 färger: Pyxels 16 standardfärger plus 10 biom × 6 skuggnivåer. Pyxel klarar upp till 256 (`pyxel.colors[:] = ...`), så det finns plats för dimma och himmel.
+- Ljuset beräknas från lutningen, med sol från nordväst och ordnad dithering (Bayer 4×4) på världskoordinater. Generatorn räknar med en cells kant runt varje sampel, så skuggningen blir sömlös mellan chunkar (testat).
+- **Prestanda:** en chunk på 128×128 tar ~21 ms och en hel skärm ~40 ms. Det är för mycket för att göras mitt i en bildruta, så fas 3 behöver generering i en bakgrundstråd och/eller optimering (t.ex. hoppa över bergsbrus där bergsmasken är 0).
 
 ### Fas 2 – Voxel Space-renderare
 - [ ] `voxel.py` med fast kamera över en statisk höjdkarta.
@@ -330,6 +340,7 @@ Projektet använder [uv](https://docs.astral.sh/uv/) och Python 3.14.
 ```bash
 uv sync                          # installera beroenden (installerar Python 3.14 vid behov)
 uv run flightsim                 # starta spelet (just nu bara en startskärm)
+uv run flightsim-map             # kartvy: pilar = panorera, Z/X = zoom, 1-3 = lager, N/B = seed
 uv run flightsim-spike           # renderingsspiken: 1 = brus, 2 = voxel, pilar = flyg, W/S = höjd
 uv run flightsim-spike --bench   # mät renderingstider utan fönster
 uv run pytest                    # kör tester

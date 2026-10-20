@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 flightsim = "flightsim.app:main"
+flightsim-map = "flightsim.mapview:main"
 flightsim-spike = "flightsim.spike:main"
 
 [build-system]

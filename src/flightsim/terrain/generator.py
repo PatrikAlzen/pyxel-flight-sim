@@ -1,0 +1,174 @@
+"""Turns world coordinates into terrain: height, moisture, biome and colour.
+
+Units: one world unit is one heightmap cell at full detail; heights use the
+same unit. Sea level is 0.
+"""
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from flightsim.render.palette import SHADES, biome_color
+from flightsim.terrain import shading
+from flightsim.terrain.biomes import Biome, classify
+from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
+
+
+@dataclass(frozen=True)
+class TerrainSettings:
+    sea_level: float = 0.0
+
+    # Continents: very low frequency, warped so coastlines are not blobby.
+    continent_period: float = 2400.0
+    continent_warp: float = 0.35  # in continent periods
+    continent_bias: float = 0.06  # > 0 gives more land than sea
+    continent_height: float = 110.0
+    coast_step: float = 24.0
+
+    # Mountain ranges: ridged noise, only inland and only where the range mask is high.
+    mountain_period: float = 700.0
+    range_period: float = 2500.0
+    mountain_height: float = 320.0
+
+    # Rolling hills everywhere on land.
+    hill_period: float = 110.0
+    hill_height: float = 14.0
+
+    moisture_period: float = 1500.0
+
+    # Biome thresholds (heights above sea level).
+    deep_water: float = 18.0
+    beach_height: float = 2.5
+    tree_line: float = 135.0
+    snow_line: float = 175.0
+    rock_slope: float = 1.1
+    biome_jitter: float = 10.0
+
+
+@dataclass
+class TerrainSample:
+    """A rectangular grid of generated terrain.
+
+    ``height`` is the visible surface (water flattened to sea level) and is what
+    rendering and collision use. ``ground`` includes the sea floor.
+    """
+
+    x0: float
+    y0: float
+    step: float
+    height: np.ndarray
+    ground: np.ndarray
+    moisture: np.ndarray
+    biome: np.ndarray
+    color: np.ndarray
+
+
+class TerrainGenerator:
+    def __init__(self, seed: int, settings: TerrainSettings | None = None) -> None:
+        self.seed = seed
+        self.settings = settings or TerrainSettings()
+        self._continent = FractalNoise(seed + 1, octaves=5)
+        self._warp_x = FractalNoise(seed + 2, octaves=3)
+        self._warp_y = FractalNoise(seed + 3, octaves=3)
+        self._mountains = FractalNoise(seed + 4, octaves=6)
+        self._ranges = FractalNoise(seed + 5, octaves=2)
+        self._hills = FractalNoise(seed + 6, octaves=4)
+        self._moisture = FractalNoise(seed + 7, octaves=3)
+        self._jitter = FractalNoise(seed + 8, octaves=2)
+
+    def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Terrain height at world coordinates, including the sea floor."""
+        s = self.settings
+        cx, cy = domain_warp(
+            np.asarray(x, dtype=np.float64) / s.continent_period,
+            np.asarray(y, dtype=np.float64) / s.continent_period,
+            self._warp_x,
+            self._warp_y,
+            s.continent_warp,
+        )
+        continent = self._continent.fbm(cx, cy) + s.continent_bias
+        inland = smoothstep(0.02, 0.2, continent)
+        on_land = smoothstep(0.0, 0.1, continent)
+        # A step in height right at the coastline keeps shores narrow and crisp
+        # instead of wide, speckled tidal flats.
+        coast = (smoothstep(-0.03, 0.03, continent) - 0.5) * s.coast_step
+        base = continent * s.continent_height + coast
+
+        ranges = smoothstep(
+            -0.25, 0.25, self._ranges.fbm(x / s.range_period, y / s.range_period)
+        )
+        ridges = self._mountains.ridged(x / s.mountain_period, y / s.mountain_period)
+        mountains = ridges**2 * s.mountain_height * inland * ranges
+
+        hills = (
+            self._hills.fbm(x / s.hill_period, y / s.hill_period)
+            * s.hill_height
+            * on_land
+        )
+
+        return s.sea_level + base + mountains + hills
+
+    def moisture(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Moisture in [0, 1]; drives the choice between desert, grass and forest."""
+        s = self.settings
+        n = self._moisture.fbm(x / s.moisture_period, y / s.moisture_period)
+        return np.clip(n * 1.4 + 0.5, 0.0, 1.0)
+
+    def sample(
+        self, x0: float, y0: float, width: int, height: int, step: float = 1.0
+    ) -> TerrainSample:
+        """Generate a ``height`` x ``width`` grid whose first cell is at world (x0, y0).
+
+        ``step`` is the world distance between cells; values above 1 give a
+        zoomed-out overview. Every value depends only on world position, so
+        adjacent samples line up exactly.
+        """
+        s = self.settings
+        # One extra cell on each side so slopes and lighting use real neighbours.
+        gx = np.round(x0 / step) + np.arange(-1, width + 1)
+        gy = np.round(y0 / step) + np.arange(-1, height + 1)
+        xs = gx[None, :] * step
+        ys = gy[:, None] * step
+        ground_b = self.elevation(xs, ys)
+        surface_b = np.maximum(ground_b, s.sea_level)
+
+        ground = ground_b[1:-1, 1:-1]
+        surface = surface_b[1:-1, 1:-1]
+        inner_x, inner_y = xs[:, 1:-1], ys[1:-1, :]
+        moisture = self.moisture(inner_x, inner_y)
+        jitter = self._jitter.fbm(inner_x / 40, inner_y / 40) * s.biome_jitter
+        biome = classify(
+            ground,
+            moisture,
+            shading.slope(ground_b, step),
+            jitter,
+            sea_level=s.sea_level,
+            deep_water=s.deep_water,
+            beach_height=s.beach_height,
+            tree_line=s.tree_line,
+            snow_line=s.snow_line,
+            rock_slope=s.rock_slope,
+        )
+
+        # Land is lit by the sun; water gets lighter towards the shore.
+        depth = s.sea_level - ground
+        water_light = np.where(
+            biome == Biome.DEEP_WATER,
+            1.0 - np.clip((depth - s.deep_water) / 60, 0, 1),
+            1.0 - np.clip(depth / s.deep_water, 0, 1),
+        )
+        light = np.where(depth > 0, water_light, shading.lambert(surface_b, step))
+        ix = gx[None, 1:-1].astype(np.int64)
+        iy = gy[1:-1, None].astype(np.int64)
+        shade = shading.quantize(light, SHADES, ix, iy)
+
+        return TerrainSample(
+            x0=float(gx[1] * step),
+            y0=float(gy[1] * step),
+            step=step,
+            height=surface.astype(np.float32),
+            ground=ground.astype(np.float32),
+            moisture=moisture.astype(np.float32),
+            biome=biome,
+            color=biome_color(biome, shade),
+        )
