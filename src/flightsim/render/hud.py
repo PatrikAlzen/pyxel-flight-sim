@@ -285,7 +285,8 @@ class Hud:
             pyxel.dither(0.5)
             pyxel.rect(0, 0, w, h, WARN)
             pyxel.dither(1.0)
-        centered_text(h // 2 - 12, "CRASHED", WARN)
-        centered_text(h // 2 - 4, plane.crash_reason, TEXT)
+        # Text at the top and bottom: the wreck is in the middle of the view.
+        centered_text(8, "CRASHED", WARN)
+        centered_text(16, plane.crash_reason, TEXT)
         countdown = max(0, math.ceil(self.respawn_delay - plane.state_time))
-        centered_text(h // 2 + 8, f"RESPAWN IN {countdown}  (R)", pyxel.COLOR_GRAY)
+        centered_text(h - 12, f"RESPAWN IN {countdown}  (R)", pyxel.COLOR_GRAY)

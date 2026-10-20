@@ -17,6 +17,8 @@ _COLORS = {
     "r": pyxel.COLOR_RED,
     "y": pyxel.COLOR_YELLOW,
     "n": pyxel.COLOR_NAVY,
+    "o": pyxel.COLOR_ORANGE,
+    "b": pyxel.COLOR_BROWN,
 }
 
 # A small high-wing plane seen from behind and slightly above.
@@ -31,6 +33,23 @@ PLANE_REAR = [
     "kkkkggggggknnnkggggggkkkk",
     "..........kwwwk..........",
     "..........kgggk..........",
+    "...........kkk...........",
+]
+
+
+# The same plane after a crash: tail bent, right wing torn off, sooty and
+# smouldering, with bits of debris beside it.
+PLANE_WRECK = [
+    "..............k..........",
+    ".............kgk.........",
+    "............kgk..........",
+    ".......kkkkkkgkkk........",
+    ".......kgwgkkwwgk........",
+    "kkkkkkkkkkkkwkkkkk.......",
+    "krwwwgwwkwwwwwgwkk..k....",
+    "kkkkggkkkknbnkkk...k.k...",
+    "..........kgykk..o.......",
+    "..........kokbk..........",
     "...........kkk...........",
 ]
 

@@ -449,6 +449,23 @@ Flimrande pixlar i en testbild: 335 → 89. De som är kvar är enstaka pixlar l
 - **Kostnad:** rendering ~9 ms vid planflygning (från ~7) och ~17–19 ms i de dyraste vyerna (brant nedåt högt upp, rakt upp mot berg). I fönster fortfarande 30 FPS (medel 33,4 ms). I loopens branta nedåtdel tar bildrutorna 22–28 ms.
 - 2 nya regressionstester, som båda misslyckades med den gamla koden: nivåerna är överens om biom, och en snögräns på en brant vägg flyttar sig högst en pixel per litet kamerasteg.
 
+### Efter fas 6 – Kraschvy med vrak och rök ✅
+
+- **Partikelsystem** ([sim/particles.py](src/flightsim/sim/particles.py)): rök, eld och gnistor i världskoordinater, lagrade som NumPy-arrayer. Det är högst 700 partiklar, och de äldsta får ge plats.
+  - Röken stiger, bromsas och driver med samma vind som molnen, och den växer och tunnas ut med åldern.
+  - Elden stiger snabbt och dör ung.
+  - Gnistor kastas ut och faller i bågar.
+- **Krasch:** i nedslagsögonblicket kommer en explosion (eldklot, gnistor och rökpuff) och ett vrak lämnas på marken. Vraket brinner med eld och en rökpelare så länge planet ligger kvar. Efter respawn hänger röken kvar några sekunder, och vraket ligger kvar tills nästa krasch eller ny värld, så att man kan se sin förra kraschplats när man flyger förbi.
+- **Rendering** ([render/effects.py](src/flightsim/render/effects.py)):
+  - Partiklar och vrak projiceras med samma kamera som terrängen, ritas längst bort först och skalas efter avstånd.
+  - De döljs bakom terräng via renderarens avstånd per pixel, så att rök bakom en ås klipps av.
+  - Rökens genomskinlighet görs med Pyxels `dither`. Ny rök tonar in så att den inte döljer vraket.
+  - Rökfärgerna kommer från klippans palett, så de följer dag, skymning och natt. Elden använder klara standardfärger som lyser även på natten.
+  - Vraket ([PLANE_WRECK](src/flightsim/render/sprites.py)) har böjd stjärt, avbruten höger vinge, sot och glöd, och ritas efter partiklarna eftersom flammorna annars täcker det.
+- **Kraschvyn** kommer närmare (40 enheter bort, 18 upp) och cirklar långsamt runt vraket (12°/s). Texten har flyttats till över- och underkanten så att vraket syns, och respawn sker efter 4 s i stället för 3.
+- **Prestanda:** ritningen tar i snitt ~16 ms i kraschvyn med 100–130 partiklar (jämfört med ~14 ms utan).
+- 8 nya tester för partiklarna (totalt 106): explosionens innehåll, jämn brinntakt, att röken stiger med vinden, att gnistorna faller, livslängd, kapacitet, att röken växer och tunnas ut, samt att partiklar döljs bakom terräng.
+
 ### Fas 7 – Idéer för senare
 - Landningsbanor och flygplatser placerade procedurellt på plana ytor.
 - Ringar/checkpoints att flyga igenom, tidslopp.

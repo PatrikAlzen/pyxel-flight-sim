@@ -1,5 +1,7 @@
 """Global settings for the game."""
 
+import math
+
 TITLE = "Pyxel Flight Sim"
 
 # Internal render resolution (16:9). Pyxel scales the window up to fit the display.
@@ -19,9 +21,10 @@ TERRAIN_WORKERS = 2
 
 # Flying.
 COCKPIT_HEIGHT = 1.0  # camera height above the aircraft's reference point
-RESPAWN_DELAY = 3.0  # seconds after a crash
-CRASH_VIEW_DISTANCE = 60.0  # the crash is watched from this far behind
-CRASH_VIEW_HEIGHT = 30.0  # ...and this high above the ground or crash site
+RESPAWN_DELAY = 4.0  # seconds after a crash
+CRASH_VIEW_DISTANCE = 40.0  # the crash is watched from this far away
+CRASH_VIEW_HEIGHT = 18.0  # ...and this high above the ground or crash site
+CRASH_ORBIT_SPEED = math.radians(12)  # the crash camera circles the wreck
 
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame

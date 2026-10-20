@@ -33,9 +33,10 @@ from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
 from flightsim.render import palette
 from flightsim.render.clouds import CloudLayer
+from flightsim.render.effects import draw_particles, draw_wreck
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
-from flightsim.render.sprites import PLANE_REAR, TRANSPARENT, make_image
+from flightsim.render.sprites import PLANE_REAR, PLANE_WRECK, TRANSPARENT, make_image
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.render.worldmap import (
     ZOOMS,
@@ -46,6 +47,7 @@ from flightsim.render.worldmap import (
 from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
+from flightsim.sim.particles import Particles
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
@@ -107,6 +109,10 @@ class App:
         self.chase_view = False
         self.aircraft = Aircraft()
         self.clouds: CloudLayer | None = None
+        self.particles = Particles()
+        # Where the last crash happened; the wreck stays there, smoking,
+        # until the next crash or a new world.
+        self.wreck_at: np.ndarray | None = None
         self.time = 0.0  # simulated seconds, drives waves and cloud drift
         self.lighting = 0  # index into palette.LIGHTINGS
         self.mode = Mode.TITLE
@@ -131,6 +137,7 @@ class App:
         palette.install()
         self.title_images = make_title_images(config.TITLE.upper())
         self.plane_sprite = make_image(PLANE_REAR)
+        self.wreck_sprite = make_image(PLANE_WRECK)
         self.audio = Audio()
         pyxel.run(self.update, self.draw)
 
@@ -182,6 +189,8 @@ class App:
         self.camera = Camera()
         self.chase.reset()
         self.clouds = CloudLayer(self.seed)
+        self.particles.clear()
+        self.wreck_at = None
         self.time = 0.0
         self.ghost = False
         # Background workers generate the starting area while a progress bar
@@ -219,6 +228,7 @@ class App:
             self.chase_view = not self.chase_view
             self.chase.reset()
         self.time += DT
+        self.particles.update(DT, self.clouds.settings.drift)
         if self.ghost:
             self.move_ghost()
         else:
@@ -280,8 +290,20 @@ class App:
             and plane.state_time > config.RESPAWN_DELAY
         ):
             self.respawn_here()
+        was_crashed = plane.state is FlightState.CRASHED
         plane.update(flight_controls(), DT, self.world.height_at)
+        if plane.state is FlightState.CRASHED:
+            if not was_crashed:
+                self.crashed()
+            self.particles.burn(self.wreck_at + [0.0, 0.0, 3.0], DT)
         self.follow_aircraft()
+
+    def crashed(self) -> None:
+        """The moment of impact: leave a wreck on the ground and blow up."""
+        plane = self.aircraft
+        ground = max(self.world.height_at(plane.x, plane.y), plane.settings.sea_level)
+        self.wreck_at = np.array([plane.x, plane.y, ground])
+        self.particles.explode(self.wreck_at + [0.0, 0.0, 2.0])
 
     def follow_aircraft(self) -> None:
         plane, cam = self.aircraft, self.camera
@@ -296,15 +318,16 @@ class App:
         cam.set_vectors(plane.forward, plane.up)
 
     def watch_crash_site(self) -> None:
-        """Look at the crash from behind and above, outside any hillside."""
+        """Circle slowly round the wreck from above, outside any hillside."""
         plane, cam = self.aircraft, self.camera
         back = config.CRASH_VIEW_DISTANCE
-        fx, fy = math.sin(plane.heading), -math.cos(plane.heading)
+        heading = plane.heading + config.CRASH_ORBIT_SPEED * plane.state_time
+        fx, fy = math.sin(heading), -math.cos(heading)
         cam.x, cam.y = plane.x - fx * back, plane.y - fy * back
         site = max(plane.altitude, self.world.height_at(plane.x, plane.y))
         ground = max(self.world.height_at(cam.x, cam.y), site)
         cam.altitude = ground + config.CRASH_VIEW_HEIGHT
-        cam.heading = plane.heading
+        cam.heading = heading % math.tau
         cam.pitch = -math.atan2(cam.altitude - site, back)
         cam.roll = 0.0
 
@@ -370,6 +393,17 @@ class App:
             screen_array(), self.world.levels, self.camera, self.time, self.clouds
         )
         self.render_time.add(time.perf_counter() - start)
+        if self.wreck_at is not None:
+            draw_wreck(
+                self.wreck_sprite,
+                TRANSPARENT,
+                self.wreck_at,
+                self.camera,
+                self.renderer,
+                self.particles,
+            )
+        else:
+            draw_particles(self.particles, self.camera, self.renderer)
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
