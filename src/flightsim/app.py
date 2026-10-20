@@ -1,6 +1,15 @@
 """Main Pyxel application.
 
-For now this is a free "ghost" camera for exploring the terrain:
+Flying:
+
+    up / down       nose down / nose up
+    left / right    roll
+    W / S           throttle up / down
+    A / D           rudder (on the ground: steer)
+    B               wheel brakes
+    R               respawn here
+
+Exploring (G toggles a free "ghost" camera; leaving it respawns the plane there):
 
     up / down       move forward / back
     left / right    turn
@@ -10,6 +19,9 @@ For now this is a free "ghost" camera for exploring the terrain:
     Z / X           roll left / right
     V               level the view
     SHIFT           move faster
+
+Always:
+
     F1              toggle debug info
     Q / ESC         quit
 
@@ -27,11 +39,13 @@ from flightsim import config
 from flightsim.render import palette
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.voxel import VoxelRenderer
+from flightsim.sim.aircraft import Aircraft, AircraftSettings, Controls, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
 W, H = config.SCREEN_W, config.SCREEN_H
+DT = 1 / config.FPS
 MAX_PITCH = math.radians(45)
 MAX_ROLL = math.radians(45)
 
@@ -52,18 +66,30 @@ class Timer:
         self.ms += (seconds * 1000 - self.ms) * 0.1
 
 
+def shadow_text(x: int, y: int, text: str, color: int) -> None:
+    pyxel.text(x + 1, y + 1, text, pyxel.COLOR_BLACK)
+    pyxel.text(x, y, text, color)
+
+
+def centered_text(y: int, text: str, color: int) -> None:
+    shadow_text((W - len(text) * 4) // 2, y, text, color)
+
+
 class App:
     def __init__(self) -> None:
         self.world = make_world()
         self.renderer = VoxelRenderer(W, H)
         self.camera = Camera()
+        sea_level = self.world.generator.settings.sea_level
+        self.aircraft = Aircraft(settings=AircraftSettings(sea_level=sea_level))
+        self.ghost = False
         # Background workers generate the starting area while a progress bar
         # is shown; afterwards they keep generating as the camera moves.
         self.world.update(self.camera.x, self.camera.y)
         self.load_total = self.world.pending
         self.loading = True
         self.progress = 0.0
-        self.show_debug = True
+        self.show_debug = False
         self.render_time = Timer()
         self.frame_time = Timer()
         self.last_frame = time.perf_counter()
@@ -86,7 +112,12 @@ class App:
             return
         if pyxel.btnp(pyxel.KEY_F1):
             self.show_debug = not self.show_debug
-        self.move_camera()
+        if pyxel.btnp(pyxel.KEY_G):
+            self.toggle_ghost()
+        if self.ghost:
+            self.move_ghost()
+        else:
+            self.fly()
         self.world.update(self.camera.x, self.camera.y)
 
     def load_step(self) -> None:
@@ -95,10 +126,56 @@ class App:
         self.progress = 1 - pending / self.load_total
         if pending == 0:
             self.loading = False
-            ground = self.world.height_at(self.camera.x, self.camera.y)
-            self.camera.altitude = ground + 60
+            self.aircraft.respawn(0.0, 0.0, 0.0, self.world.height_at)
+            self.follow_aircraft()
 
-    def move_camera(self) -> None:
+    def toggle_ghost(self) -> None:
+        self.ghost = not self.ghost
+        if not self.ghost:
+            cam = self.camera
+            self.aircraft.respawn(cam.x, cam.y, cam.heading, self.world.height_at)
+            self.aircraft.altitude = max(self.aircraft.altitude, cam.altitude)
+
+    def fly(self) -> None:
+        plane = self.aircraft
+        if pyxel.btnp(pyxel.KEY_R) or (
+            plane.state is FlightState.CRASHED
+            and plane.state_time > config.RESPAWN_DELAY
+        ):
+            plane.respawn(plane.x, plane.y, plane.heading, self.world.height_at)
+        controls = Controls(
+            pitch=pyxel.btn(pyxel.KEY_DOWN) - pyxel.btn(pyxel.KEY_UP),
+            roll=pyxel.btn(pyxel.KEY_RIGHT) - pyxel.btn(pyxel.KEY_LEFT),
+            yaw=pyxel.btn(pyxel.KEY_D) - pyxel.btn(pyxel.KEY_A),
+            throttle=pyxel.btn(pyxel.KEY_W) - pyxel.btn(pyxel.KEY_S),
+            brake=pyxel.btn(pyxel.KEY_B),
+        )
+        plane.update(controls, DT, self.world.height_at)
+        self.follow_aircraft()
+
+    def follow_aircraft(self) -> None:
+        plane, cam = self.aircraft, self.camera
+        if plane.state is FlightState.CRASHED:
+            self.watch_crash_site()
+            return
+        cam.x, cam.y = plane.x, plane.y
+        cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
+        cam.heading, cam.pitch, cam.roll = plane.heading, plane.pitch, plane.roll
+
+    def watch_crash_site(self) -> None:
+        """Look at the crash from behind and above, outside any hillside."""
+        plane, cam = self.aircraft, self.camera
+        back = config.CRASH_VIEW_DISTANCE
+        fx, fy = math.sin(plane.heading), -math.cos(plane.heading)
+        cam.x, cam.y = plane.x - fx * back, plane.y - fy * back
+        site = max(plane.altitude, self.world.height_at(plane.x, plane.y))
+        ground = max(self.world.height_at(cam.x, cam.y), site)
+        cam.altitude = ground + config.CRASH_VIEW_HEIGHT
+        cam.heading = plane.heading
+        cam.pitch = -math.atan2(cam.altitude - site, back)
+        cam.roll = 0.0
+
+    def move_ghost(self) -> None:
         cam = self.camera
         speed = config.GHOST_SPEED * (
             config.GHOST_FAST if pyxel.btn(pyxel.KEY_SHIFT) else 1
@@ -139,6 +216,10 @@ class App:
         self.renderer.render(screen_array(), self.world.levels, self.camera)
         self.render_time.add(time.perf_counter() - start)
 
+        if self.ghost:
+            centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", pyxel.COLOR_WHITE)
+        else:
+            self.draw_flight_info()
         if self.show_debug:
             self.draw_debug()
 
@@ -153,6 +234,52 @@ class App:
             x + 1, H // 2 + 1, int((bar_w - 2) * self.progress), 4, pyxel.COLOR_LIME
         )
 
+    def draw_flight_info(self) -> None:
+        """Bare-bones instruments; the real HUD comes in phase 5."""
+        plane = self.aircraft
+        agl = (
+            plane.altitude
+            - plane.settings.gear_height
+            - self.world.height_at(plane.x, plane.y)
+        )
+        blink = pyxel.frame_count // 8 % 2 == 0
+
+        if plane.state is FlightState.CRASHED:
+            if plane.state_time < 0.25:
+                pyxel.dither(0.5)
+                pyxel.rect(0, 0, W, H, pyxel.COLOR_RED)
+                pyxel.dither(1.0)
+            countdown = max(0, math.ceil(config.RESPAWN_DELAY - plane.state_time))
+            centered_text(H // 2 - 12, "CRASHED", pyxel.COLOR_RED)
+            centered_text(H // 2 - 4, plane.crash_reason, pyxel.COLOR_WHITE)
+            centered_text(H // 2 + 8, f"RESPAWN IN {countdown}  (R)", pyxel.COLOR_GRAY)
+            return
+
+        sinking_low = (
+            plane.state is FlightState.FLYING and agl < 40 and plane.vertical_speed < -8
+        )
+        if plane.stalling:
+            warning = ("STALL", pyxel.COLOR_RED)
+        elif sinking_low:
+            warning = ("PULL UP", pyxel.COLOR_YELLOW)
+        else:
+            warning = None
+        if warning and blink:
+            centered_text(H // 2 - 20, *warning)
+        if plane.state is FlightState.LANDED:
+            hint = (
+                "LANDED" if plane.speed > 1 else "LANDED - W THROTTLE, DOWN TO ROTATE"
+            )
+            centered_text(H // 2 - 20, hint, pyxel.COLOR_LIME)
+
+        pyxel.rect(0, H - 9, W, 9, pyxel.COLOR_BLACK)
+        info = (
+            f"SPD {plane.speed:3.0f}  ALT {plane.altitude:4.0f}  AGL {max(agl, 0):4.0f}"
+            f"  VS {plane.vertical_speed:+3.0f}  HDG {math.degrees(plane.heading):03.0f}"
+            f"  THR {plane.throttle * 100:3.0f}%"
+        )
+        pyxel.text(2, H - 7, info, pyxel.COLOR_WHITE)
+
     def draw_debug(self) -> None:
         cam = self.camera
         ground = self.world.height_at(cam.x, cam.y)
@@ -160,15 +287,16 @@ class App:
         agl = cam.altitude - ground
         pitch = math.degrees(cam.pitch)
         roll = math.degrees(cam.roll)
+        plane = self.aircraft
         lines = [
             f"X {cam.x:.0f} Y {cam.y:.0f}  ALT {cam.altitude:.0f}  AGL {agl:.0f}",
             f"HDG {cam.heading_degrees:03.0f}  PITCH {pitch:+.0f}  ROLL {roll:+.0f}",
             f"RENDER {self.render_time.ms:4.1f}MS  {fps:4.1f}FPS",
             f"TILES PENDING {self.world.pending}  STALE {self.world.stale_tiles(cam.x, cam.y)}",
+            f"{plane.state.name}  LIFT {plane.lift:.2f}  SINK {plane.sink:.1f}",
         ]
         for i, line in enumerate(lines):
-            pyxel.text(3, 3 + i * 7, line, pyxel.COLOR_BLACK)
-            pyxel.text(2, 2 + i * 7, line, pyxel.COLOR_WHITE)
+            shadow_text(2, 2 + i * 7, line, pyxel.COLOR_WHITE)
 
 
 def bench(frames: int, speed: float) -> None:

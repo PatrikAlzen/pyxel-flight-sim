@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–3 klara: oändlig procedurell värld i 3D med fri kamera, plus kartvy. Nästa steg: fas 4, flygmodellen.
+> **Status:** fas 0–4 klara: flygbart plan i en oändlig procedurell 3D-värld, med landning, krasch och respawn. Nästa steg: fas 5, HUD och kontroller.
 
 ---
 
@@ -171,7 +171,7 @@ Uppdatering per tick (fast tidssteg, `dt = 1/30`):
 6. **Kollision:** jämför `pos.z` med terränghöjden under planet. Mjuk kontakt på plan mark med låg sjunkhastighet = landning, annars krasch → explosion och respawn.
 7. **Gränser:** maxhöjd (tunnare luft ⇒ mindre motorkraft).
 
-Alla konstanter samlas i `config.py` så att flygkänslan lätt kan finjusteras.
+Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygkänslan lätt kan finjusteras.
 
 ## Kamera, HUD och kontroller
 
@@ -199,7 +199,9 @@ Alla konstanter samlas i `config.py` så att flygkänslan lätt kan finjusteras.
 | `A` / `D` | Höger spak X | Sidroder (liten girning) |
 | `C` | `Y` | Byt kameravy |
 | `M` | `X` | Stor karta |
+| `B` | – | Hjulbromsar (på marken) |
 | `R` | `Start` | Respawn |
+| `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
 | `F1` | – | Debug-överlägg (FPS, chunkar, koordinater) |
 | `Q` / `Esc` | – | Avsluta |
 
@@ -243,7 +245,7 @@ pyxel-flight-sim/
     ├── test_voxel.py          # horisont, tipp/roll, skymning, dimma, LOD, ringbuffert
     ├── test_world.py          # fönster som följer kameran, stegvis = nyfyllt, arbetsprocesser
     ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
-    └── test_aircraft.py       # stall, svängning, kollision (fas 4)
+    └── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
 ```
 
 ## Implementationsplan
@@ -317,11 +319,24 @@ Lärdomar:
 - Python 3.14 startar processer med **forkserver** på Linux, som importerar huvudmodulen på nytt. `__main__.py` och alla skript som startar spelet måste därför ha `if __name__ == "__main__":`.
 - Pyxels `quit()` kan avsluta utan att Pythons exit-hanterare körs. Arbetsprocesserna avslutar sig därför själva när pipen stängs.
 
-### Fas 4 – Flygmodell
-- [ ] `aircraft.py` med gas, tipp, roll, bankade svängar, fart och överstegring.
-- [ ] Koppla kameran till planet, inklusive roll via skjuvning.
-- [ ] Kollision med terräng, krasch och respawn.
-- [ ] Enhetstester för flygmodellen.
+### Fas 4 – Flygmodell ✅
+- [x] `aircraft.py` med gas, tipp, roll, bankade svängar, fart och överstegring.
+- [x] Koppla kameran till planet, inklusive roll via skjuvning.
+- [x] Kollision med terräng, krasch och respawn.
+- [x] Enhetstester för flygmodellen.
+
+**Resultat:**
+- `uv run flightsim` startar nu i luften, 120 enheter över marken i ~100 enheter/s. Spökkameran finns kvar på `G`, och lämnar man den respawnar planet där kameran är, vilket fungerar som teleport.
+- **Flygmodellen** ([sim/aircraft.py](src/flightsim/sim/aircraft.py)) känner inte till Pyxel. Terrängen kommer in som en funktion `ground(x, y)`. Alla konstanter finns i `AircraftSettings`.
+  - Spaken styr tipp- och rollhastighet med 0,15 s tröghet. Effekten är svagare i låg fart, och rollen planar ut när man släpper. Tippen ligger kvar, så planet håller sin attityd.
+  - Planet svänger genom att banka: girhastigheten är `g·tan(roll)/fart`. 60° bank ger ~27°/s i marschfart.
+  - Fart = dragkraft − luftmotstånd − `g·sin(tipp)`. Toppfart ~140 vid havsytan, lägre på hög höjd (dragkraften ×`exp(-höjd/1500)`).
+  - Lyftkraft = `min(1, (fart/stallfart)²)`. Lyft som saknas, i stall eller när vingen lutar i bank, blir sjunkhastighet. I stall faller nosen. Stallfart 50, lyftfart 58.
+- **Mark:** en sättning med sjunkhastighet < 8, roll < 12°, nosen inte under −4° och lutning < 0,3 blir landning. Annars kraschar planet med en orsak (för hårt, vingspetsen i marken, nosen först, terrängen, vatten). Ungefär halva landytan är plan nog att landa på. På marken styr man med `←/→` eller `A/D`, bromsar med `B`, och planet lyfter när farten > 58 och nosen höjs. Rullar man in i terräng brantare än 0,6 kraschar planet.
+- **Krasch:** röd blixt, orsaken visas, kameran tittar på kraschplatsen bakifrån och ovanifrån, och efter 3 s respawnar planet på samma plats (eller direkt med `R`).
+- **Tillfällig HUD** längst ned: fart, höjd, höjd över marken, vertikal fart, kurs och gas, plus blinkande STALL och PULL UP. Den riktiga HUD:en kommer i fas 5.
+- **17 enhetstester** för flygmodellen: stabil planflygning, gas → fart, bankade svängar, att rollen planar ut, energi vid stigning/dykning, stall, tunn luft, svag kontroll i låg fart, landning, inbromsning och ny start, olika kraschtyper och taxning.
+- Provflygning i riktigt fönster med inspelade knapptryckningar (sväng, stigning, dykning in i en sluttning, respawn): stabila 30 FPS.
 
 ### Fas 5 – HUD och kontroller
 - [ ] Instrument, kompass, minikarta och stor karta.
@@ -366,7 +381,7 @@ Projektet använder [uv](https://docs.astral.sh/uv/) och Python 3.14.
 
 ```bash
 uv sync                          # installera beroenden (installerar Python 3.14 vid behov)
-uv run flightsim                 # 3D-vy med fri kamera (se kontroller under fas 2)
+uv run flightsim                 # flyg! (se Kontroller ovan; G = spökkamera)
 uv run flightsim --bench         # mät terränggenerering och rendering utan fönster
 uv run flightsim-map             # kartvy: pilar = panorera, Z/X = zoom, 1-3 = lager, N/B = seed
 uv run pytest                    # kör tester

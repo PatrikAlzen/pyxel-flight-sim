@@ -17,6 +17,12 @@ TERRAIN_LEVELS = [(1024, 1.0), (1024, 2.0), (512, 8.0)]
 # Background processes generating terrain tiles.
 TERRAIN_WORKERS = 2
 
+# Flying.
+COCKPIT_HEIGHT = 1.0  # camera height above the aircraft's reference point
+RESPAWN_DELAY = 3.0  # seconds after a crash
+CRASH_VIEW_DISTANCE = 60.0  # the crash is watched from this far behind
+CRASH_VIEW_HEIGHT = 30.0  # ...and this high above the higher of camera ground and crash site
+
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame
 GHOST_FAST = 5.0  # speed multiplier while SHIFT is held
