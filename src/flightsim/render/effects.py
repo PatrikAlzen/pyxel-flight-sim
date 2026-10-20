@@ -17,6 +17,8 @@ from flightsim.terrain.biomes import Biome
 # The wreck sprite is drawn at full size when this far from the camera.
 WRECK_FULL_SIZE_DISTANCE = 40.0
 WRECK_TILT = -14.0  # degrees: lying on its side
+# Below this scale (about three pixels wide) a wreck is not worth drawing.
+WRECK_MIN_SCALE = 0.12
 
 
 def project_points(
@@ -105,40 +107,43 @@ def draw_particles(
     pyxel.dither(1.0)
 
 
-def draw_wreck(
+def draw_wrecks(
     sprite: pyxel.Image,
     colkey: int,
-    at: np.ndarray,
+    positions: np.ndarray,
     camera: Camera,
     renderer: VoxelRenderer,
-    particles: Particles,
 ) -> None:
-    """The wrecked plane lying at world point ``at``, scaled for its distance.
+    """Wrecked planes lying at world points (rows of ``positions``).
 
-    Drawn after the particles: the flames start right at the wreck, and half
+    Each is scaled for its distance, hidden behind terrain and drawn far to
+    near. Wrecks too far away to be more than a couple of pixels are skipped.
+    Draw the particles first: flames start right at a burning wreck, and half
     of them would otherwise be in front of it and hide it.
     """
-    draw_particles(particles, camera, renderer)
-    w, h = renderer.width, renderer.height
-    sx, sy, depth = project_points(camera, at[None, :], renderer.focal, w, h)
-    if (
-        depth[0] <= 1.0
-        or not in_front_of_terrain(renderer, camera, at[None, :], sx, sy)[0]
-    ):
+    if not len(positions):
         return
-    scale = min(2.0, WRECK_FULL_SIZE_DISTANCE / float(depth[0]))
-    # Pyxel scales about the middle of the copied area; lift it so it rests on
-    # the ground instead of being half buried.
-    centre_y = float(sy[0]) - sprite.height * scale / 2
-    pyxel.blt(
-        float(sx[0]) - sprite.width / 2,
-        centre_y - sprite.height / 2,
-        sprite,
-        0,
-        0,
-        sprite.width,
-        sprite.height,
-        colkey,
-        rotate=WRECK_TILT,
-        scale=scale,
-    )
+    w, h = renderer.width, renderer.height
+    sx, sy, depth = project_points(camera, positions, renderer.focal, w, h)
+    scale = WRECK_FULL_SIZE_DISTANCE / np.where(depth > 0, depth, np.inf)
+    size = sprite.width * scale
+    visible = (depth > 1.0) & (scale >= WRECK_MIN_SCALE)
+    visible &= (sx > -size) & (sx < w + size) & (sy > -size) & (sy < h + size)
+    visible &= in_front_of_terrain(renderer, camera, positions, sx, sy)
+    for i in np.flatnonzero(visible)[np.argsort(-depth[visible])]:
+        k = min(2.0, float(scale[i]))
+        # Pyxel scales about the middle of the copied area; lift it so it rests
+        # on the ground instead of being half buried.
+        centre_y = float(sy[i]) - sprite.height * k / 2
+        pyxel.blt(
+            float(sx[i]) - sprite.width / 2,
+            centre_y - sprite.height / 2,
+            sprite,
+            0,
+            0,
+            sprite.width,
+            sprite.height,
+            colkey,
+            rotate=WRECK_TILT,
+            scale=k,
+        )

@@ -58,11 +58,27 @@ def draw_plane_marker(x: float, y: float, heading: float, color: int = TEXT) -> 
     pyxel.trib(*tip, *left, *right, color)
 
 
+def draw_wreck_marker(x: float, y: float) -> None:
+    """A small cross where the plane once crashed."""
+    for dx, dy in ((1, 1), (0, 0)):  # black outline, then red
+        color = pyxel.COLOR_BLACK if dx else pyxel.COLOR_RED
+        pyxel.line(x - 2 + dx, y - 2 + dy, x + 2 + dx, y + 2 + dy, color)
+        pyxel.line(x - 2 + dx, y + 2 + dy, x + 2 + dx, y - 2 + dy, color)
+
+
 def draw_map_overlay(
-    world_map: WorldMap, x: float, y: float, heading: float, step: float
+    world_map: WorldMap,
+    x: float,
+    y: float,
+    heading: float,
+    step: float,
+    wrecks: np.ndarray | None = None,
 ) -> None:
-    """The in-flight map: terrain, the plane, a scale bar and help text."""
+    """The in-flight map: terrain, old crash sites, the plane, a scale bar and help."""
     world_map.draw(x, y, step)
+    if wrecks is not None:
+        for wx, wy, _ in wrecks:
+            draw_wreck_marker(*world_map.to_screen(wx, wy))
     px, py = world_map.to_screen(x, y)
     if pyxel.frame_count // 10 % 2 == 0:
         draw_plane_marker(px, py, heading, CAUTION)

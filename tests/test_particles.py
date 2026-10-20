@@ -84,3 +84,16 @@ def test_points_behind_a_ridge_are_hidden():
 
     visible = in_front_of_terrain(Ridge, camera, points, sx, sy)
     assert visible.tolist() == [True, False]
+
+
+def test_old_wrecks_smoulder_thinly():
+    p = Particles()
+    wrecks = np.array([[0.0, 0.0, 10.0], [500.0, 0.0, 20.0]])
+    for _ in range(round(4 / DT)):
+        p.smoulder(wrecks, DT)
+        p.update(DT, CALM)
+    near_first = np.hypot(p.position[:, 0], p.position[:, 1]) < 50
+    assert near_first.any() and (~near_first).any()  # both wrecks smoke
+    assert 10 < len(p) < 40  # a wisp, not a fire: ~2.5 per second each
+    assert np.all(p.kind == Kind.SMOKE)
+    assert p.position[:, 2].max() > 30  # and it rises high

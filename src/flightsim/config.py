@@ -25,6 +25,9 @@ RESPAWN_DELAY = 4.0  # seconds after a crash
 CRASH_VIEW_DISTANCE = 40.0  # the crash is watched from this far away
 CRASH_VIEW_HEIGHT = 18.0  # ...and this high above the ground or crash site
 CRASH_ORBIT_SPEED = math.radians(12)  # the crash camera circles the wreck
+MAX_WRECKS = 100  # old crash sites kept in the world; the oldest go first
+WRECK_DRAW_DISTANCE = 600.0  # wrecks further away are too small to see
+WRECK_SMOKE_DISTANCE = 1500.0  # old wrecks this close smoulder, visible from afar
 
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame

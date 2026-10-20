@@ -462,16 +462,17 @@ Flimrande pixlar i en testbild: 335 → 89. De som är kvar är enstaka pixlar l
   - Rökens genomskinlighet görs med Pyxels `dither`. Ny rök tonar in så att den inte döljer vraket.
   - Rökfärgerna kommer från klippans palett, så de följer dag, skymning och natt. Elden använder klara standardfärger som lyser även på natten.
   - Vraket ([PLANE_WRECK](src/flightsim/render/sprites.py)) har böjd stjärt, avbruten höger vinge, sot och glöd, och ritas efter partiklarna eftersom flammorna annars täcker det.
+- **Gamla vrak ligger kvar** ([sim/wrecks.py](src/flightsim/sim/wrecks.py)): varje kraschplats i världen sparas, upp till `config.MAX_WRECKS = 100` (de äldsta försvinner först), och listan töms vid ny värld. Vrak inom 600 enheter ritas, skalade efter avstånd och dolda bakom terräng. Vrak som skulle bli under ~3 pixlar hoppas över. Bara det senaste vraket brinner. De äldre **pyr** med en tunn rökslinga, cirka 2,5 partiklar/s slumpat per vrak inom 1500 enheter, så att kraschplatser syns på långt håll. På den stora kartan markeras de med röda kryss. Vraken sparas inte mellan spelsessioner (se fas 7).
 - **Kraschvyn** kommer närmare (40 enheter bort, 18 upp) och cirklar långsamt runt vraket (12°/s). Texten har flyttats till över- och underkanten så att vraket syns, och respawn sker efter 4 s i stället för 3.
 - **Prestanda:** ritningen tar i snitt ~16 ms i kraschvyn med 100–130 partiklar (jämfört med ~14 ms utan).
-- 8 nya tester för partiklarna (totalt 106): explosionens innehåll, jämn brinntakt, att röken stiger med vinden, att gnistorna faller, livslängd, kapacitet, att röken växer och tunnas ut, samt att partiklar döljs bakom terräng.
+- 13 nya tester för partiklar och vrak (totalt 111): explosionens innehåll, jämn brinntakt, att röken stiger med vinden, att gnistorna faller, livslängd, kapacitet, att röken växer och tunnas ut, att partiklar döljs bakom terräng, att gamla vrak pyr samt vraklistans ordning, tak och närhetssökning.
 
 ### Fas 7 – Idéer för senare
 - Landningsbanor och flygplatser placerade procedurellt på plana ytor.
 - Ringar/checkpoints att flyga igenom, tidslopp.
 - Procedurella objekt: träd, byar, fyrar (som sprites skalade efter avstånd).
 - Väder: vind, turbulens, regn.
-- Spara favoritplatser (seed + koordinater).
+- Spara favoritplatser (seed + koordinater), och gamla vrak per seed så att de finns kvar till nästa gång.
 - Webbversion via `pyxel package` / `pyxel app2html`.
 
 ## Prestanda och risker

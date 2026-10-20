@@ -33,7 +33,7 @@ from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
 from flightsim.render import palette
 from flightsim.render.clouds import CloudLayer
-from flightsim.render.effects import draw_particles, draw_wreck
+from flightsim.render.effects import draw_particles, draw_wrecks
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
 from flightsim.render.sprites import PLANE_REAR, PLANE_WRECK, TRANSPARENT, make_image
@@ -48,6 +48,7 @@ from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.sim.particles import Particles
+from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
@@ -110,9 +111,8 @@ class App:
         self.aircraft = Aircraft()
         self.clouds: CloudLayer | None = None
         self.particles = Particles()
-        # Where the last crash happened; the wreck stays there, smoking,
-        # until the next crash or a new world.
-        self.wreck_at: np.ndarray | None = None
+        # Every crash site in this world; the wrecks stay where they fell.
+        self.wrecks = Wrecks(config.MAX_WRECKS)
         self.time = 0.0  # simulated seconds, drives waves and cloud drift
         self.lighting = 0  # index into palette.LIGHTINGS
         self.mode = Mode.TITLE
@@ -190,7 +190,7 @@ class App:
         self.chase.reset()
         self.clouds = CloudLayer(self.seed)
         self.particles.clear()
-        self.wreck_at = None
+        self.wrecks.clear()
         self.time = 0.0
         self.ghost = False
         # Background workers generate the starting area while a progress bar
@@ -229,6 +229,10 @@ class App:
             self.chase.reset()
         self.time += DT
         self.particles.update(DT, self.clouds.settings.drift)
+        cam = self.camera
+        self.particles.smoulder(
+            self.wrecks.near(cam.x, cam.y, config.WRECK_SMOKE_DISTANCE), DT
+        )
         if self.ghost:
             self.move_ghost()
         else:
@@ -295,15 +299,16 @@ class App:
         if plane.state is FlightState.CRASHED:
             if not was_crashed:
                 self.crashed()
-            self.particles.burn(self.wreck_at + [0.0, 0.0, 3.0], DT)
+            self.particles.burn(self.wrecks.latest + [0.0, 0.0, 3.0], DT)
         self.follow_aircraft()
 
     def crashed(self) -> None:
         """The moment of impact: leave a wreck on the ground and blow up."""
         plane = self.aircraft
         ground = max(self.world.height_at(plane.x, plane.y), plane.settings.sea_level)
-        self.wreck_at = np.array([plane.x, plane.y, ground])
-        self.particles.explode(self.wreck_at + [0.0, 0.0, 2.0])
+        site = np.array([plane.x, plane.y, ground])
+        self.wrecks.add(site)
+        self.particles.explode(site + [0.0, 0.0, 2.0])
 
     def follow_aircraft(self) -> None:
         plane, cam = self.aircraft, self.camera
@@ -379,6 +384,7 @@ class App:
                     plane.y,
                     plane.heading,
                     ZOOMS[self.map_zoom],
+                    self.wrecks.positions,
                 )
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
@@ -393,17 +399,11 @@ class App:
             screen_array(), self.world.levels, self.camera, self.time, self.clouds
         )
         self.render_time.add(time.perf_counter() - start)
-        if self.wreck_at is not None:
-            draw_wreck(
-                self.wreck_sprite,
-                TRANSPARENT,
-                self.wreck_at,
-                self.camera,
-                self.renderer,
-                self.particles,
-            )
-        else:
-            draw_particles(self.particles, self.camera, self.renderer)
+        draw_particles(self.particles, self.camera, self.renderer)
+        nearby = self.wrecks.near(
+            self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
+        )
+        draw_wrecks(self.wreck_sprite, TRANSPARENT, nearby, self.camera, self.renderer)
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
