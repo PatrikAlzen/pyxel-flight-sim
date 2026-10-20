@@ -4,6 +4,7 @@ Units: one world unit is one heightmap cell at full detail; heights use the
 same unit. Sea level is 0.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -44,6 +45,11 @@ class TerrainSettings:
     snow_line: float = 175.0
     rock_slope: float = 1.1
     biome_jitter: float = 10.0
+    # Slope for choosing biomes (e.g. rock on steep faces) is measured over this
+    # world distance at every level of detail. Measuring over the grid spacing
+    # instead made coarse levels see smoother, snowier mountains than fine ones,
+    # so slopes flipped between snow and rock where the levels meet on screen.
+    biome_slope_span: float = 16.0
 
 
 @dataclass
@@ -139,23 +145,27 @@ class TerrainGenerator:
         adjacent samples line up exactly.
         """
         s = self.settings
-        # One extra cell on each side so slopes and lighting use real neighbours.
-        gx = np.round(x0 / step) + np.arange(-1, width + 1)
-        gy = np.round(y0 / step) + np.arange(-1, height + 1)
+        # Extra cells on each side so slopes and lighting use real neighbours:
+        # one for lighting, more for the wider span used to choose biomes.
+        reach = max(1, math.ceil(s.biome_slope_span / 2 / step))
+        gx = np.round(x0 / step) + np.arange(-reach, width + reach)
+        gy = np.round(y0 / step) + np.arange(-reach, height + reach)
         xs = gx[None, :] * step
         ys = gy[:, None] * step
         ground_b = self.elevation(xs, ys)
         surface_b = np.maximum(ground_b, s.sea_level)
 
-        ground = ground_b[1:-1, 1:-1]
-        surface = surface_b[1:-1, 1:-1]
-        inner_x, inner_y = xs[:, 1:-1], ys[1:-1, :]
+        inner = slice(reach, reach + height), slice(reach, reach + width)
+        lit = slice(reach - 1, reach + height + 1), slice(reach - 1, reach + width + 1)
+        ground = ground_b[inner]
+        surface = surface_b[inner]
+        inner_x, inner_y = xs[:, inner[1]], ys[inner[0], :]
         moisture = self.moisture(inner_x, inner_y)
         jitter = self._jitter.fbm(inner_x / 40, inner_y / 40) * s.biome_jitter
         biome = classify(
             ground,
             moisture,
-            shading.slope(ground_b, step),
+            shading.slope(ground_b, step, reach),
             jitter,
             sea_level=s.sea_level,
             deep_water=s.deep_water,
@@ -172,14 +182,14 @@ class TerrainGenerator:
             1.0 - np.clip((depth - s.deep_water) / 60, 0, 1),
             1.0 - np.clip(depth / s.deep_water, 0, 1),
         )
-        light = np.where(depth > 0, water_light, shading.lambert(surface_b, step))
-        ix = gx[None, 1:-1].astype(np.int64)
-        iy = gy[1:-1, None].astype(np.int64)
+        light = np.where(depth > 0, water_light, shading.lambert(surface_b[lit], step))
+        ix = gx[None, inner[1]].astype(np.int64)
+        iy = gy[inner[0], None].astype(np.int64)
         shade = shading.quantize(light, SHADES, ix, iy)
 
         return TerrainSample(
-            x0=float(gx[1] * step),
-            y0=float(gy[1] * step),
+            x0=float(gx[reach] * step),
+            y0=float(gy[reach] * step),
             step=step,
             height=surface.astype(np.float32),
             ground=ground.astype(np.float32),

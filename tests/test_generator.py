@@ -69,3 +69,12 @@ def test_colors_are_unfogged_terrain_indices(generator):
     s = generator.sample(0, 0, 64, 64, step=8)
     assert s.color.min() >= palette.TERRAIN_BASE
     assert s.color.max() < palette.TERRAIN_BASE + palette.TERRAIN_COLORS
+
+
+def test_levels_of_detail_agree_on_biomes(generator):
+    """Rock versus snow must not depend on the level's cell size, or slopes flip
+    between them where two levels meet on screen."""
+    fine = generator.sample(1024, -512, 256, 256, 1.0).biome
+    for step in (2, 8):
+        coarse = generator.sample(1024, -512, 256 // step, 256 // step, step).biome
+        assert np.array_equal(coarse, fine[::step, ::step]), step

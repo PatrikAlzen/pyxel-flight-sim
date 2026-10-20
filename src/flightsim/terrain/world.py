@@ -133,6 +133,26 @@ class TerrainLevel:
         iy, ix = self.indices(x, y)
         return float(self.heights[iy, ix])
 
+    def smooth_heights(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Heights at world points, bilinearly interpolated between cells.
+
+        Cell values are the terrain at the cell corners (multiples of
+        ``step``), so this is the smooth surface through them rather than flat
+        steps one cell wide.
+        """
+        u = np.asarray(x) / self.step
+        v = np.asarray(y) / self.step
+        u0, v0 = np.floor(u), np.floor(v)
+        fu = (u - u0).astype(np.float32)
+        fv = (v - v0).astype(np.float32)
+        i0 = u0.astype(np.int64) & self.mask
+        j0 = v0.astype(np.int64) & self.mask
+        i1, j1 = (i0 + 1) & self.mask, (j0 + 1) & self.mask
+        h = self.heights
+        top = h[j0, i0] + (h[j0, i1] - h[j0, i0]) * fu
+        bottom = h[j1, i0] + (h[j1, i1] - h[j1, i0]) * fu
+        return top + (bottom - top) * fv
+
 
 def generate_tile(
     generator: TerrainGenerator, tile: int, step: float, tx: int, ty: int
@@ -188,7 +208,8 @@ class TerrainWorld:
         return len(self._queue) + sum(len(jobs) for _, _, jobs in self._workers)
 
     def height_at(self, x: float, y: float) -> float:
-        return self.levels[0].height_at(x, y)
+        """Ground height for collision: the same smooth surface the renderer draws."""
+        return float(self.levels[0].smooth_heights(x, y))
 
     def stale_tiles(self, x: float, y: float) -> int:
         """Missing tiles that reach into a level's ``safe_radius`` around (x, y).

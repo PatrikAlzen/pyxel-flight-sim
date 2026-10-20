@@ -136,3 +136,30 @@ def test_roll_does_not_stretch_the_edges():
         abs(int((rolled == WALL).sum()) - int((level_view == WALL).sum()))
         < 0.15 * (level_view == WALL).sum()
     )
+
+
+def test_colour_edges_move_smoothly_with_the_camera():
+    """A snow line on a steep face must not jump by whole samples as the camera moves.
+
+    Colours come from the exact point where each pixel's ray meets the ground,
+    so the edge creeps at most a pixel per small step.
+    """
+    width, height = 256, 144
+    level = TerrainLevel.empty(1024, 1.0)
+    north = -np.arange(1024)  # world y of each row index, for rows north of the camera
+    iy = level.indices(0, north)[0]
+    face = np.clip(
+        -north.astype(float) - 60.0, 0, None
+    )  # rises 1:1 from 60 units north
+    level.heights[iy, :] = face[:, None]
+    level.colors[iy, :] = np.where(face > 15, WALL, GROUND)[:, None]
+    renderer = VoxelRenderer(width, height, RenderSettings(z_far=400))
+    out = np.zeros((height, width), dtype=np.uint8)
+    rows = []
+    for step in range(16):
+        camera = Camera(x=0.5, y=-step * 0.3, altitude=10.0)
+        renderer.render(out, [level], camera)
+        column = out[:, width // 2]
+        rows.append(int(np.flatnonzero(column == WALL).max()))  # lowest snow pixel
+    jumps = np.abs(np.diff(rows))
+    assert jumps.max() <= 1, rows

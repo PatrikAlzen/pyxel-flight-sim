@@ -424,6 +424,31 @@ Lärdomar:
   - Rendering: Euler ↔ vektorer, ryggläge, 90° roll, rakt ned och att roll inte drar ut kanterna.
   - Jaktkamera: följer genom en loop.
 
+### Efter fas 6 – Flimmer mellan snö och berg ✅
+
+Problem: på höga berg blinkade terrängbitar mellan snö och klippa när man flög, nästan som z-fighting.
+
+**Felsökning:** flimret mättes som pixlar vars biom går A → B → A över tre bildrutor medan kameran flyger mot bergen, uppdelat per avstånd. Rörelse ger sällan fram-och-tillbaka-växlingar, men flimmer gör det. Två orsaker hittades:
+
+1. **Detaljnivåerna var oense om biomet.** Klippa väljs på branta sluttningar, och lutningen mättes mellan grannceller, alltså över 2 enheter i steg 1 men 16 enheter i steg 8. Grövre nivåer såg därför mjukare och snöigare berg: steg 8 hade ett annat biom än steg 1 på **23 %** av punkterna. Där två nivåer möttes på skärmen, en gräns som flyttar sig med kameran, bytte bergssidor färg.
+2. **Färgen kom från närmaste sampel.** Längs strålarna ligger samplen 6–10 enheter isär på de avstånden, så på en brant bergssida täckte varje sampel 3–4 pixelrader. När samplen gled över terrängen hoppade snögränserna i block.
+
+**Åtgärder:**
+- Lutningen för biomval mäts över en fast sträcka i världen (`TerrainSettings.biome_slope_span = 16`) på alla nivåer. Steg 1, 2 och 8 är nu helt överens (testat). Ljussättningen använder fortfarande den fina lutningen. Genereringen tar ~1 ms mer per tile eftersom rutnätet behöver en bredare kant.
+- Renderaren räknar ut exakt var varje pixels stråle skär terrängen mellan de två sampel den hamnar emellan, och hämtar färgen från *den punkten* med pixelns exakta riktning, ungefär som texturmappning. Färger hör då till fasta punkter i världen. Vågorna på vattnet räknas också per pixel. De lodräta ränderna i bergssidor blev samtidigt mycket mindre.
+- Höjderna läses bilinjärt mellan cellerna (`TerrainLevel.smooth_heights`) i stället för som trappsteg. Annars vickade skärningspunkten ±1 pixel när samplen gled över trappstegen. Kollisionen använder samma jämna yta, så planet och bilden är överens om var marken är.
+
+**Resultat:**
+
+| Avstånd | 200–400 | 400–800 | 800–1600 | Totalt |
+|---|---|---|---|---|
+| Före | 2,2 % | 2,8 % | 0,3 % | 2,1 % |
+| Efter | 0,3 % | 0,9 % | 0,4 % | 0,5 % |
+
+Flimrande pixlar i en testbild: 335 → 89. De som är kvar är enstaka pixlar längs kanter, alltså vanlig pixelaliasing utan kantutjämning, och inga blinkande block.
+- **Kostnad:** rendering ~9 ms vid planflygning (från ~7) och ~17–19 ms i de dyraste vyerna (brant nedåt högt upp, rakt upp mot berg). I fönster fortfarande 30 FPS (medel 33,4 ms). I loopens branta nedåtdel tar bildrutorna 22–28 ms.
+- 2 nya regressionstester, som båda misslyckades med den gamla koden: nivåerna är överens om biom, och en snögräns på en brant vägg flyttar sig högst en pixel per litet kamerasteg.
+
 ### Fas 7 – Idéer för senare
 - Landningsbanor och flygplatser placerade procedurellt på plana ytor.
 - Ringar/checkpoints att flyga igenom, tidslopp.

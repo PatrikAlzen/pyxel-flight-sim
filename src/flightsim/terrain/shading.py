@@ -35,10 +35,22 @@ def lambert(heights: np.ndarray, spacing: float) -> np.ndarray:
     return (AMBIENT + (1 - AMBIENT) * np.clip(diffuse, 0.0, 1.0)).astype(np.float32)
 
 
-def slope(heights: np.ndarray, spacing: float) -> np.ndarray:
-    """Steepness (rise over run) of each interior cell; same border rule as ``lambert``."""
-    dzdx = (heights[1:-1, 2:] - heights[1:-1, :-2]) / (2 * spacing)
-    dzdy = (heights[2:, 1:-1] - heights[:-2, 1:-1]) / (2 * spacing)
+def slope(heights: np.ndarray, spacing: float, reach: int = 1) -> np.ndarray:
+    """Steepness (rise over run) of each interior cell.
+
+    Measured between the cells ``reach`` steps away on either side, so
+    ``heights`` needs a border of ``reach`` cells and the result is that much
+    smaller on every side. A wider reach gives the slope of the landscape
+    rather than of each little bump.
+    """
+    r = reach
+    inner = slice(r, heights.shape[0] - r), slice(r, heights.shape[1] - r)
+    dzdx = (heights[inner[0], 2 * r :] - heights[inner[0], : -2 * r]) / (
+        2 * r * spacing
+    )
+    dzdy = (heights[2 * r :, inner[1]] - heights[: -2 * r, inner[1]]) / (
+        2 * r * spacing
+    )
     return np.sqrt(dzdx * dzdx + dzdy * dzdy).astype(np.float32)
 
 

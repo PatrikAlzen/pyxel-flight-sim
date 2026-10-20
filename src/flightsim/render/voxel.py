@@ -190,7 +190,7 @@ class VoxelRenderer:
         each pixel looks at, for overlays that must hide behind terrain.
         """
         s = self.settings
-        azimuth, slope = self._pixel_angles(camera)
+        azimuth, slope, east, south = self._pixel_angles(camera)
 
         # Azimuth bins present on screen, renumbered 0..k-1.
         tier = self._pixel_tiers(camera)
@@ -238,7 +238,7 @@ class VoxelRenderer:
         lengths = self._lengths[length_class[order]]
         starts = np.concatenate([[0], np.cumsum(lengths)[:-1]])
 
-        keys, colors, samples = [], [], []
+        keys, all_heights, samples = [], [], []
         for cls in np.unique(length_class):
             members = order[length_class[order] == cls]
             n_d = int(self._lengths[cls])
@@ -250,7 +250,6 @@ class VoxelRenderer:
             wx = camera.x + np.sin(angle)[:, None] * d
             wy = camera.y - np.cos(angle)[:, None] * d
             heights = np.empty(wx.shape, dtype=np.float32)
-            cls_colors = np.empty(wx.shape, dtype=np.uint8)
             for level, span in self.depth_ranges(levels):
                 if span.start == 0 and index[:, -1].max() < span.stop:
                     mask = slice(None)  # the whole class fits in this level
@@ -258,31 +257,49 @@ class VoxelRenderer:
                     mask = (index >= span.start) & (index < span.stop)
                     if not mask.any():
                         continue
-                iy, ix = level.indices(wx[mask], wy[mask])
-                heights[mask] = level.heights[iy, ix]
-                cls_colors[mask] = level.colors[iy, ix]
-            self._animate_water(cls_colors, wx, wy, time)
+                heights[mask] = level.smooth_heights(wx[mask], wy[mask])
             # Skyline per azimuth: the steepest slope seen so far outwards.
             skyline = np.maximum.accumulate(
                 np.clip((heights - camera.altitude) / d, -_MAX_SLOPE, _MAX_SLOPE),
                 axis=1,
             )
             keys.append((skyline + rank[members, None] * _KEY_STRIDE).ravel())
-            colors.append(cls_colors.ravel())
+            all_heights.append(heights.ravel())
             samples.append(index.ravel())
         keys = np.concatenate(keys)
-        colors = np.concatenate(colors)
+        heights = np.concatenate(all_heights)
         samples = np.concatenate(samples)
 
         pixel_rank = rank[pixel_bin]
         found = np.searchsorted(keys, (slope + pixel_rank * _KEY_STRIDE).ravel())
         found = found.reshape(self.height, self.width) - starts[pixel_rank]
         is_sky = found >= lengths[pixel_rank]
-        flat = starts[pixel_rank] + np.minimum(found, lengths[pixel_rank] - 1)
-        hit = samples[flat]
+        found = np.minimum(found, lengths[pixel_rank] - 1)
+        flat = starts[pixel_rank] + found
 
-        fog_level = np.floor(self.fog[hit] + self.dither).astype(np.int32)
-        ground = colors[flat].astype(np.int32) + fog_level * palette.TERRAIN_COLORS
+        # The ray crosses the terrain between the hit sample and the one before
+        # it. Find where, assuming the ground is straight in between, and take
+        # the colour at exactly that spot. Colours then belong to fixed points
+        # in the world instead of to whichever sample is nearest, so edges
+        # between e.g. snow and rock no longer jump by whole samples (several
+        # pixels on steep faces) as the camera moves.
+        d1, h1 = self.z[samples[flat]], heights[flat]
+        before = np.maximum(flat - 1, 0)
+        d0, h0 = self.z[samples[before]], heights[before]
+        rise = (h1 - h0) - slope * (d1 - d0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = (camera.altitude + slope * d0 - h0) / rise
+        t = np.where(
+            (found > 0) & (rise > 0), np.clip(np.nan_to_num(t, nan=1.0), 0, 1), 1
+        )
+        distance = d0 + t * (d1 - d0)
+        hx = camera.x + distance * east
+        hy = camera.y + distance * south
+        colors = self._colors_at(levels, hx, hy, distance)
+        self._animate_water(colors, hx, hy, time)
+
+        fog_level = np.floor(self.fog_for(distance) + self.dither).astype(np.int32)
+        ground = colors.astype(np.int32) + fog_level * palette.TERRAIN_COLORS
         ground = np.where(fog_level >= palette.FOG_LEVELS, palette.SKY_BASE, ground)
 
         span = math.radians(s.sky_span_degrees)
@@ -296,21 +313,42 @@ class VoxelRenderer:
         image = np.where(is_sky, sky, ground)
         self.pixel_azimuth = azimuth
         self.pixel_slope = slope
-        self.pixel_distance = np.where(is_sky, np.inf, self.z[hit])
+        self.pixel_distance = np.where(is_sky, np.inf, distance)
         if clouds is not None:
             clouds.draw(image, self, camera, time)
         out[:] = image
 
-    def _pixel_angles(self, camera: Camera) -> tuple[np.ndarray, np.ndarray]:
-        """Azimuth (clockwise from north, [0, 2pi)) and slope of every pixel's ray."""
+    def _colors_at(
+        self,
+        levels: Sequence[TerrainLevel],
+        x: np.ndarray,
+        y: np.ndarray,
+        distance: np.ndarray,
+    ) -> np.ndarray:
+        """Terrain colours at world points, each from the finest level covering it."""
+        colors = np.empty(x.shape, dtype=np.uint8)
+        radii = np.array([level.safe_radius for level in levels[:-1]])
+        which = np.searchsorted(radii, distance)
+        for i, level in enumerate(levels):
+            mask = which == i
+            if mask.any():
+                iy, ix = level.indices(x[mask], y[mask])
+                colors[mask] = level.colors[iy, ix]
+        return colors
+
+    def _pixel_angles(self, camera: Camera) -> tuple[np.ndarray, ...]:
+        """Azimuth (clockwise from north, [0, 2pi)) and slope of every pixel's ray,
+        plus the ray's horizontal direction as a unit (east, south) vector."""
         f, r, u = camera.basis()
         rx = f[0] + self._px * r[0] + self._py * u[0]
         ry = f[1] + self._px * r[1] + self._py * u[1]
         rz = f[2] + self._px * r[2] + self._py * u[2]
         azimuth = np.arctan2(rx, -ry) % math.tau
+        horizontal = np.hypot(rx, ry)
         with np.errstate(divide="ignore", invalid="ignore"):
-            slope = np.clip(rz / np.hypot(rx, ry), -_MAX_SLOPE, _MAX_SLOPE)
-        return azimuth, np.nan_to_num(slope)
+            slope = np.clip(rz / horizontal, -_MAX_SLOPE, _MAX_SLOPE)
+            east, south = rx / horizontal, ry / horizontal
+        return azimuth, np.nan_to_num(slope), np.nan_to_num(east), np.nan_to_num(south)
 
     def _pixel_tiers(self, camera: Camera) -> np.ndarray:
         """Azimuth tier per pixel: 0 = full resolution, higher = coarser.
