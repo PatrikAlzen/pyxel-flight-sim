@@ -9,3 +9,14 @@ DISPLAY_SCALE = 4
 FPS = 30
 
 SEED = 1337
+
+# Terrain levels of detail kept around the camera, finest first: (cells per
+# side, world units per cell). Each must reach far enough for the depth range
+# the renderer assigns it.
+TERRAIN_LEVELS = [(1024, 1.0), (1024, 2.0), (512, 8.0)]
+
+# Free camera.
+GHOST_SPEED = 2.0  # world units per frame
+GHOST_FAST = 5.0  # speed multiplier while SHIFT is held
+GHOST_TURN = 0.04  # radians per frame
+GHOST_CLEARANCE = 4.0  # minimum height above the ground

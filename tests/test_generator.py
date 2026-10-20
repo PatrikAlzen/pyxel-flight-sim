@@ -65,14 +65,7 @@ def test_overview_has_varied_world(generator):
     assert s.ground.max() > generator.settings.snow_line
 
 
-def test_colors_are_valid_palette_indices(generator):
+def test_colors_are_unfogged_terrain_indices(generator):
     s = generator.sample(0, 0, 64, 64, step=8)
     assert s.color.min() >= palette.TERRAIN_BASE
-    assert s.color.max() < len(palette.colors())
-
-
-def test_palette_fits_pyxel():
-    assert len(palette.colors()) <= 256
-    assert (
-        palette.biome_color(Biome.SNOW, palette.SHADES - 1) == len(palette.colors()) - 1
-    )
+    assert s.color.max() < palette.TERRAIN_BASE + palette.TERRAIN_COLORS

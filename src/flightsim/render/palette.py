@@ -1,9 +1,16 @@
-"""Game palette: Pyxel's 16 default colours followed by shaded terrain ramps.
+"""Game palette: Pyxel's 16 default colours, shaded terrain ramps, fog and sky.
 
-Indices 0-15 keep the default Pyxel colours so ``pyxel.COLOR_*`` still works for
-text and HUD. Every biome then gets ``SHADES`` consecutive indices running from
-shadow to full sunlight, so a terrain pixel's colour index is
-``biome_color(biome, shade)``.
+Layout of the 256 palette slots:
+
+- ``0..15``: Pyxel's default colours, so ``pyxel.COLOR_*`` still works for
+  text and HUD.
+- ``TERRAIN_BASE..``: ``FOG_LEVELS`` copies of the terrain colours. Copy 0 is
+  clear; each later copy is blended further towards ``FOG_COLOR``. Within a
+  copy every biome has ``SHADES`` consecutive indices from shadow to full sun,
+  so a terrain colour is ``biome_color(biome, shade)`` and its fogged version
+  is ``color + level * TERRAIN_COLORS``.
+- ``SKY_BASE..``: ``SKY_COLORS`` sky shades from the horizon (equal to the fog
+  colour, so fully fogged terrain melts into the sky) up to the zenith.
 """
 
 import numpy as np
@@ -13,6 +20,17 @@ from flightsim.terrain.biomes import Biome
 
 SHADES = 6
 TERRAIN_BASE = 16
+TERRAIN_COLORS = len(Biome) * SHADES
+
+# How far each fog copy is blended towards the fog colour. Fog level
+# FOG_LEVELS (one past the last copy) means fully fogged: SKY_BASE.
+FOG_BLEND = [0.0, 0.35, 0.68]
+FOG_LEVELS = len(FOG_BLEND)
+FOG_COLOR = 0xBCD6EC
+
+SKY_BASE = TERRAIN_BASE + TERRAIN_COLORS * FOG_LEVELS
+SKY_COLORS = 8
+SKY_ZENITH = 0x3A64B0
 
 # (shadow, sunlit) RGB per biome; intermediate shades are interpolated.
 RAMPS: dict[Biome, tuple[int, int]] = {
@@ -46,10 +64,18 @@ def _lerp_rgb(a: int, b: int, t: float) -> int:
 
 def colors() -> list[int]:
     """The full palette as 24-bit RGB values."""
-    result = list(pyxel.DEFAULT_COLORS)
+    terrain = []
     for biome in Biome:
         dark, light = RAMPS[biome]
-        result += [_lerp_rgb(dark, light, i / (SHADES - 1)) for i in range(SHADES)]
+        terrain += [_lerp_rgb(dark, light, i / (SHADES - 1)) for i in range(SHADES)]
+
+    result = list(pyxel.DEFAULT_COLORS)
+    for blend in FOG_BLEND:
+        result += [_lerp_rgb(c, FOG_COLOR, blend) for c in terrain]
+    result += [
+        _lerp_rgb(FOG_COLOR, SKY_ZENITH, i / (SKY_COLORS - 1))
+        for i in range(SKY_COLORS)
+    ]
     return result
 
 

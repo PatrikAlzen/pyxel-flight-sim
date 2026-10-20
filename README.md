@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–1 klara (renderingsspik, terränggenerering och kartvy). Nästa steg: fas 2, Voxel Space-renderaren.
+> **Status:** fas 0–2 klara: terränggenerering, kartvy och en 3D-vy med fri kamera över en statisk värld. Nästa steg: fas 3, oändlig värld.
 
 ---
 
@@ -218,29 +218,31 @@ pyxel-flight-sim/
 │       ├── __main__.py        # startpunkt: python -m flightsim
 │       ├── app.py             # Pyxel-appen: init, update, draw, spellägen
 │       ├── config.py          # upplösning, seed, konstanter för flygmodell och rendering
-│       ├── spike.py           # fas 0-spik (tillfällig), ersätts av render/voxel.py
 │       ├── mapview.py         # debugkarta ovanifrån för att finjustera terrängen
 │       ├── terrain/
 │       │   ├── noise.py       # vektoriserat gradientbrus, fbm, ridged, domain warp
 │       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
-│       │   ├── world.py       # chunk-cache (LRU), lokalt fönster, höjdfråga för kollision
+│       │   ├── world.py       # terrängnivåer (LOD) som ringbuffertar runt kameran, höjdfråga
 │       │   └── shading.py     # lutningsbaserad ljussättning
 │       ├── render/
 │       │   ├── palette.py     # palettdefinition och färgramper
-│       │   ├── voxel.py       # Voxel Space-renderare (NumPy)
-│       │   ├── sky.py         # himmel, dimma, moln
+│       │   ├── voxel.py       # Voxel Space-renderare (NumPy) med himmel och dimma
+│       │   ├── sky.py         # moln (fas 6)
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
 │       │   └── hud.py         # instrument, minikarta
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
-│       │   └── camera.py      # kameralägen
+│       │   └── camera.py      # kamerans position och orientering, kameralägen
 │       ├── audio.py           # ljud och musik
 │       └── controls.py        # tangentbord/gamepad → abstrakta kommandon
 └── tests/
-    ├── test_noise.py          # determinism, värdeintervall, inga skarvar mellan chunkar
-    ├── test_world.py          # chunk-cache, höjdfrågor
-    └── test_aircraft.py       # stall, svängning, kollision
+    ├── test_noise.py          # determinism, värdeintervall, kontinuitet
+    ├── test_generator.py      # inga skarvar mellan chunkar, biom, vattenyta
+    ├── test_palette.py        # palettlayout, dimma ↔ himmel
+    ├── test_voxel.py          # horisont, tipp/roll, skymning, dimma, LOD, ringbuffert
+    ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
+    └── test_aircraft.py       # stall, svängning, kollision (fas 4)
 ```
 
 ## Implementationsplan
@@ -265,7 +267,7 @@ I ett riktigt fönster tar renderingen ~2,5 ms och spelet håller 30 FPS. **Slut
 Lärdomar:
 - NumPy-vyn från `data_ptr()` håller inte `pyxel.Image` vid liv. Bilden måste refereras så länge vyn används, annars blir det segfault.
 - Python 3.14.0a4 (alfa) fungerar inte med NumPy-hjulen. Använd en stabil 3.14.x (projektet kör 3.14.8 via uv).
-- Spiken (`src/flightsim/spike.py`) är slit-och-släng-kod. Voxel-algoritmen därifrån flyttas till `render/voxel.py` i fas 2.
+- Spiken var slit-och-släng-kod. Voxel-algoritmen flyttades till `render/voxel.py` i fas 2 och spiken togs bort.
 
 ### Fas 1 – Brus och 2D-karta ✅
 - [x] Implementera `noise.py` (gradientbrus + fbm + ridged) med tester.
@@ -280,15 +282,26 @@ Lärdomar:
 - Ljuset beräknas från lutningen, med sol från nordväst och ordnad dithering (Bayer 4×4) på världskoordinater. Generatorn räknar med en cells kant runt varje sampel, så skuggningen blir sömlös mellan chunkar (testat).
 - **Prestanda:** en chunk på 128×128 tar ~21 ms och en hel skärm ~40 ms. Det är för mycket för att göras mitt i en bildruta, så fas 3 behöver generering i en bakgrundstråd och/eller optimering (t.ex. hoppa över bergsbrus där bergsmasken är 0).
 
-### Fas 2 – Voxel Space-renderare
-- [ ] `voxel.py` med fast kamera över en statisk höjdkarta.
-- [ ] Himmel och dimma.
-- [ ] Fri "spökkamera" (flytta/vrid/höj/sänk) för att utforska.
-- [ ] Optimera tills målet ≥ 30 FPS nås i 256×144.
+### Fas 2 – Voxel Space-renderare ✅
+- [x] `voxel.py` med fast kamera över en statisk höjdkarta.
+- [x] Himmel och dimma.
+- [x] Fri "spökkamera" (flytta/vrid/höj/sänk) för att utforska.
+- [x] Optimera tills målet ≥ 30 FPS nås i 256×144.
+
+**Resultat:**
+- `uv run flightsim` startar 3D-vyn. En förloppsindikator visas medan terrängen genereras (~3 s), sedan styr man en fri kamera. Kontroller: `↑/↓` framåt/bakåt, `←/→` sväng, `A/D` sidled, `W/S` upp/ned, `R/F` titta upp/ned, `Z/X` roll, `V` nollställ vy, `Shift` snabbare, `F1` debuginfo.
+- **Terrängnivåer (LOD):** tre nivåer i `config.TERRAIN_LEVELS`: 1024² celler med steg 1 (nära, upp till ~270 enheter), 1024² med steg 2 (till ~540) och 512² med steg 8 (till 700). Grövre nivåer längre bort ger både längre sikt och mindre flimmer. Renderaren väljer automatiskt den finaste nivå som täcker varje djupsteg.
+- **Ringbuffert:** varje nivå (`TerrainLevel`) lagrar världscell (x, y) på index `(x mod N, y mod N)`. Renderaren slår upp med en bitmask och behöver aldrig veta var fönstret ligger. I fas 3 räcker det därför att skriva över de tiles som scrollat ut.
+- **Dimma och himmel:** paletten har nu tre dimkopior av terrängfärgerna (klar, 35 %, 68 %) och 8 himmelsnyanser, totalt 204 färger. Dimnivån per pixel ditheras mellan kopiorna, och fullt dimmig terräng har exakt samma färg som himlen vid horisonten. Därför smälter fjärran berg in i himlen utan synlig kant.
+- **Tipp och roll** stöds redan i renderaren: tipp flyttar horisonten, roll skjuvar varje kolumn.
+- **Prestanda:** rendering 3,9 ms (p95 4,3 ms) med `uv run flightsim --bench`, ~5,6 ms i fönster. Spelet håller 30 FPS.
+- **Begränsning:** världen är än så länge statisk runt origo. Flyger man längre än ~400 enheter upprepas terrängen, eftersom ringbufferten aldrig fylls på. Det åtgärdas i fas 3.
 
 ### Fas 3 – Oändlig värld
-- [ ] `world.py`: chunkar, LRU-cache och lokalt fönster som följer kameran.
-- [ ] Verifiera att det inte finns synliga skarvar och att chunkladdning inte hackar (annars: bakgrundstråd).
+- [ ] Låt varje `TerrainLevel` följa kameran: när kameran passerar en tilegräns genereras bara den nya raden/kolumnen av tiles, som skriver över den som scrollat ut.
+- [ ] Generering i bakgrundstråd (en tile tar ~21 ms), med prioritet för den finaste nivån och tiles i färdriktningen.
+- [ ] Optimera generatorn (t.ex. hoppa över bergsbrus där bergsmasken är 0).
+- [ ] Verifiera att det inte finns synliga skarvar och att chunkladdning inte hackar.
 
 ### Fas 4 – Flygmodell
 - [ ] `aircraft.py` med gas, tipp, roll, bankade svängar, fart och överstegring.
@@ -339,10 +352,9 @@ Projektet använder [uv](https://docs.astral.sh/uv/) och Python 3.14.
 
 ```bash
 uv sync                          # installera beroenden (installerar Python 3.14 vid behov)
-uv run flightsim                 # starta spelet (just nu bara en startskärm)
+uv run flightsim                 # 3D-vy med fri kamera (se kontroller under fas 2)
+uv run flightsim --bench         # mät terränggenerering och rendering utan fönster
 uv run flightsim-map             # kartvy: pilar = panorera, Z/X = zoom, 1-3 = lager, N/B = seed
-uv run flightsim-spike           # renderingsspiken: 1 = brus, 2 = voxel, pilar = flyg, W/S = höjd
-uv run flightsim-spike --bench   # mät renderingstider utan fönster
 uv run pytest                    # kör tester
 uv run ruff check . && uv run ruff format src tests   # lint och formatering
 ```
