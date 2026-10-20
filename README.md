@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 klara, plus full rotation: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: idéerna i fas 7.
+> **Status:** fas 0–6 klara, plus full rotation: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: fas 7 (innehåll och utforskning), planerad i detalj nedan.
 
 ---
 
@@ -467,13 +467,133 @@ Flimrande pixlar i en testbild: 335 → 89. De som är kvar är enstaka pixlar l
 - **Prestanda:** ritningen tar i snitt ~16 ms i kraschvyn med 100–130 partiklar (jämfört med ~14 ms utan).
 - 13 nya tester för partiklar och vrak (totalt 111): explosionens innehåll, jämn brinntakt, att röken stiger med vinden, att gnistorna faller, livslängd, kapacitet, att röken växer och tunnas ut, att partiklar döljs bakom terräng, att gamla vrak pyr samt vraklistans ordning, tak och närhetssökning.
 
-### Fas 7 – Idéer för senare
-- Landningsbanor och flygplatser placerade procedurellt på plana ytor.
-- Ringar/checkpoints att flyga igenom, tidslopp.
-- Procedurella objekt: träd, byar, fyrar (som sprites skalade efter avstånd).
-- Väder: vind, turbulens, regn.
-- Spara favoritplatser (seed + koordinater), och gamla vrak per seed så att de finns kvar till nästa gång.
-- Webbversion via `pyxel package` / `pyxel app2html`.
+### Fas 7 – Innehåll och utforskning
+
+Fas 0–6 gav en värld att flyga i. Fas 7 ska ge spelaren **saker att göra och hitta** i världen: platser att landa på, banor att flyga, landmärken att leta efter, väder som gör flygningen mer levande och en version som går att dela i webbläsaren. Varje delfas nedan är körbar för sig. Ordningen är vald så att senare delar kan bygga på grunder från tidigare.
+
+#### Gemensamma grunder
+
+Flera delfaser behöver samma byggstenar. De byggs en gång och återanvänds.
+
+**1. Deterministisk placering i ett rutnät.** Allt som placeras i världen (flygfält, banor, byar, fyrar) måste bli likadant för samma seed, i varje arbetsprocess och för varje tile, precis som terrängen. Mönstret:
+- Världen delas in i stora celler (t.ex. 2048 × 2048 enheter för flygfält och 256 × 256 för byar).
+- Varje cell får ett eget slumptal från `hash(seed, celltyp, cx, cy)` (t.ex. `numpy.random.default_rng([seed, typ, cx, cy])`). Därmed beror innehållet bara på cellen, inte på i vilken ordning cellerna besöks.
+- En cell innehåller noll eller ett objekt (eller ett litet antal). Kandidatplatser prövas mot terrängen (höjd, lutning, biom) via `TerrainGenerator`.
+- Resultatet cachas per cell (`functools.lru_cache`) i både huvudprocessen och arbetsprocesserna.
+
+**2. Objekt per tile.** Arbetsprocesserna genererar redan terrängen tile för tile. De ska även returnera de objekt (träd, hus, fyrar) som ligger i tilen, som små arrayer med position, typ och variant. Objekten lagras per plats i `TerrainLevel` (bara den finaste nivån) och följer med när ringbufferten skriver över tiles. Huvudprocessen hämtar objekten i tilesen närmast kameran.
+
+**3. Billboard-sprites i 3D.** `draw_wrecks` i [render/effects.py](src/flightsim/render/effects.py) gör redan allt som behövs: den projicerar många världspunkter på en gång, skalar efter avstånd, döljer bakom terräng via `pixel_distance`, sorterar längst bort först och hoppar över för små objekt. Den generaliseras till `draw_billboards(sprites, positions, variants)` och återanvänds för träd, hus, fyrar, vindstrutar och mer.
+
+**4. Sparad data per seed.** En liten JSON-fil per seed i `pyxel.user_data_dir("pyxel-flight-sim", "Pyxel Flight Sim")`. Den innehåller vrak, sparade platser, rekordtider, besökta flygfält och upptäckta landmärken. Filen skrivs när något ändras (atomiskt: skriv till en temporär fil och byt namn) och läses när världen startar. Formatet har ett versionsnummer så att det kan utökas.
+
+**5. Budgetar** som varje delfas måste hålla:
+
+| Resurs | Läge idag | Utrymme för fas 7 |
+|---|---|---|
+| Bildruta (33 ms) | rendering ~9 ms i planflykt, 22–28 ms i värsta fall | Nya överlägg ≤ 3 ms i planflykt. Värsta fallet får inte bli sämre. |
+| Palett (256) | 204 används | 2 nya terrängramper à 18 platser (t.ex. asfalt och tak), 16 kvar till HUD och effekter |
+| Ljudkanaler (4) | motor, vind, varningar, effekter | Inga nya kanaler. Regn delar kanal med vinden och checkpoint-ljud går på effektkanalen. |
+| Generering per tile | ~13 ms | Objektplacering ≤ 2 ms per tile |
+
+---
+
+#### 7a – Sparad data och favoritplatser *(liten, gör först)*
+
+Målet är att det man gjort i en värld finns kvar till nästa gång.
+
+- `persist.py` med `WorldSave` (dataklass och JSON) och `load(seed)` / `save(seed, data)`. Grund 4 ovan.
+- Vrak sparas och läses in. `Wrecks` finns redan, så bara serialiseringen behövs.
+- **Favoritplatser:** `L` (eller ett val i pausmenyn; `B` är redan broms) sparar position, kurs och höjd med ett namn ("PLATS 3"). Pausmenyn får valet *Gå till plats…* med en lista, och valet respawnar planet där.
+- På startskärmen visas, per seed, antal vrak och sparade platser och om det finns rekordtider.
+
+**Tester:** att data sparas och läses tillbaka, att ett gammalt filformat kan läsas och att en trasig fil ger en tom sparning i stället för en krasch. **Klart när:** man kan avsluta, starta om med samma seed och se sina vrak och platser.
+
+#### 7b – Flygfält och landningsbanor *(medel)*
+
+Målet är riktiga platser att landa på, som också fungerar som start- och mittpunkter för annat innehåll.
+
+- **Placering:** en kandidat per cell om 2048 × 2048 enheter (grund 1). För varje kandidat provas några riktningar för en bana på cirka 300 × 16 enheter. Banans höjdprofil mäts med generatorn, och den plattaste godkänns om lutningen är under ett tröskelvärde, banan ligger över havet och under trädgränsen och ingen del ligger i vatten. Ungefär var tredje cell bör få ett flygfält.
+- **Plan mark:** terrängen under banan och en övergångszon runt den jämnas ut i `TerrainGenerator.elevation`: `h = lerp(h, banhöjd, mask)`, där masken är `smoothstep` på avståndet till bankanten. Det är punktvis och deterministiskt, så tiles förblir sömlösa. Varje tile behöver bara titta på flygfälten i de närmaste cellerna.
+- **Utseende:** ett nytt biom `RUNWAY` (asfaltsramp i paletten) med mittlinje och tröskelmarkeringar ritade i världskoordinater. En vindstrut och en hangar blir billboards (grund 3).
+- **Spel:**
+  - Landning på en bana räknas: *LANDED AT FIELD 12 – SMOOTH (−3 VS)* med betyg efter sjunkhastighet och centrering.
+  - Stillastående på en bana i 2 s fyller tanken, om bränsle införs (valfritt, se nedan).
+  - Besökta fält sparas (7a).
+  - HUD:en visar riktning och avstånd till närmaste fält. Kartan visar alla fält i närheten med banans riktning, och besökta fält i en annan färg.
+- **Start:** man kan välja att börja på marken på närmaste flygfält i stället för i luften.
+
+**Tester:** placeringen är densamma för samma seed och oberoende av besöksordning, banan är plan inom tolerans, och tiles som korsar en bana är sömlösa (befintligt sömtest med en bana i rutan). Ett test landar på en bana och ger betyg. **Risk:** den utjämnade marken kan ge synliga kanter, så övergångszonen måste vara bred nog.
+
+#### 7c – Ringar och tidslopp *(medel, bygger på 7b)*
+
+Målet är en utmaning med klar början och slut.
+
+- **Bana:** utgår från ett flygfält och genereras deterministiskt från `hash(seed, fält)`. 8–15 ringar följer dalar och kustlinjer: varje nästa ring placeras 300–600 enheter bort i en riktning som väljs bland några kandidater, med den lägsta terrängen längs vägen, 40–120 enheter över marken. Svårighet (stramare svängar, lägre höjd och mindre ringar) kan bero på avståndet från världens mitt.
+- **Ritning:** en ring är en cirkel i 3D (normalen pekar längs banan). Den samplas som 24 punkter, projiceras med kameran (`Camera.project`) och ritas som linjesegment. Segment bakom terräng döljs via `pixel_distance`, precis som partiklar. Nästa ring ritas i gult, följande i vitt och passerade ringar inte alls.
+- **Passage:** planets rörelse under en bildruta är ett linjesegment. Om segmentet korsar ringens plan inom ringens radie är ringen passerad. Det är oberoende av bildfrekvens och fart.
+- **HUD:** pil mot nästa ring när den är utanför skärmen, tid, delta mot rekord vid varje ring (*−1,2 s* grönt / *+0,4 s* rött) och antal kvar. Ett ljud på effektkanalen vid passage.
+- **Rekord** sparas per seed och bana (7a). Ett "spöke" kan sparas som planets position var tionde bildruta och visas som en genomskinlig sprite vid nästa försök.
+
+**Tester:** att det passerade segmentet räknas exakt (genom, bredvid, för högt, baklänges), att banan är deterministisk och att ingen ring ligger i terräng. **Klart när:** man kan välja *Tidslopp* vid ett flygfält, flyga banan och se sin tid jämförd med rekordet.
+
+#### 7d – Träd, byar och fyrar *(stor)*
+
+Målet är att världen ska kännas befolkad och ha landmärken att navigera efter.
+
+- **Träd:** i skog och taiga placeras träd i ett jitterrutnät (ett träd per 8 × 8 enheter med sannolikhet efter biom och fuktighet) när tilen genereras (grund 2). De ritas som 2–3 varianter av billboards (lövträd, gran, snötäckt gran), bara inom ~250 enheter. Längre bort räcker terrängens skogsfärg. Budget: högst ~800 billboards per bildruta. Det mäts, och tätheten skalas ned om det blir för dyrt.
+- **Byar:** i celler om 256 × 256 enheter på flackt låglandsgräs nära vatten placeras 4–12 hus i en klunga längs en "väg" (ett smalt biom eller bara husens ordning). Hus är billboards med 3–4 varianter i taknyansen (ny takramp). Byar får namn från en enkel stavelsegenerator (seedad) och visas på kartan.
+- **Fyrar:** där land möter djupt vatten (en uddes spets: hög andel hav runt omkring) placeras högst en fyr per kustcell. På natten (`palette.NIGHT`) blinkar ett ljus i toppen, en ljus pixel som syns långt. Fyrar är landmärken som "upptäcks" när man flyger nära, och de sparas (7a).
+- **Kollision (valfritt):** träd och hus är höga en bit över marken. Om planet flyger in i ett objekts radie nära marken blir det krasch, *HIT A TREE* eller *HIT A HOUSE*. Det kontrolleras bara mot objekt i tilen under planet.
+
+**Tester:** placeringen är deterministisk och sömlös över tilegränser (objekt nära en kant hamnar i exakt en tile), det finns inga träd i vatten eller på klippa, och fyrar står bara vid kust. Ett prestandatest kör `draw_billboards` med 800 objekt och kräver under 3 ms. **Risk:** prestandan med många sprites i Python. Det mildras med hård avståndsgräns, täthetsskalning och med att objekt som täcks av terräng sorteras bort innan Pyxel-anropen.
+
+#### 7e – Väder: vind, turbulens och regn *(medel)*
+
+Målet är att flygningen ska variera och att förhållandena ska kännas.
+
+- **Vädertillstånd:** `Weather` med vindriktning och vindstyrka, byighet, molntäckning, regnintensitet och sikt. Vädret byter långsamt mellan förinställningar (*klart*, *halvklart*, *mulet*, *regn*, *storm*) över några minuter, eller låses i pausmenyn.
+- **Vind:** samma vindvektor används för planet, molnen och röken. Vinden läggs till planets förflyttning (vindavdrift). Landning i motvind ger lägre markfart, och vindstruten på flygfälten visar riktningen.
+- **Turbulens:** små slumpmässiga tipp- och rollstörningar från brus över tid, starkare i storm, nära bergskammar (där terrängens lutning i lovart är hög) och i moln.
+- **Moln:** molntäckningen styrs direkt av vädret. Tröskeln flyttas från förberäkningen till ritningen, så att täckningen kan ändras utan att texturen byggs om. I mulet väder sänks molnbasen.
+- **Regn:** sneda streck i skärmrymden (linjer i 1–2 nyanser) vars lutning följer fart och vind, med mörkare palett och kortare sikt via en ny `Lighting`-variant (*mulet*: grå dimma och dämpad terräng). Ljudet: vindkanalen byter till ett regnbrus.
+- **HUD:** vindpil och vindstyrka, plus *TURBULENCE* som varning i storm.
+
+**Tester:** vindavdrift (ett plan med kurs norrut och vind från väster driver österut), att övergångarna mellan förinställningar är kontinuerliga och att molntäckningen vid en given tröskel stämmer. **Risk:** turbulens kan kännas frustrerande, så den behöver tydliga reglage och vara svag som standard.
+
+#### 7f – Webbversion *(medel, gör sist)*
+
+Målet är att spelet ska kunna spelas i webbläsaren och delas med en länk.
+
+- **Paketering:** `pyxel package` och sedan `pyxel app2html` ger en `.pyxapp` och en HTML-fil (Pyodide i webbläsaren). NumPy behöver laddas som Pyodide-paket, och det måste verifieras med Pyxels webbstart.
+- **Inga processer i webbläsaren:** `multiprocessing` finns inte i Pyodide. `TerrainWorld(workers=0)` fungerar redan men genererar inget i bakgrunden. Det behövs ett läge där huvudtråden genererar tiles med en tidsbudget per bildruta (t.ex. högst 8 ms, de mest brådskande först) i `TerrainWorld.update`.
+- **Prestanda:** NumPy i WebAssembly är troligen 1,5–3 gånger långsammare. En förinställning `config.WEB` kan sänka siktavståndet, slå av molnen eller lägga dem i halv upplösning, minska antalet azimut och glesa ut träden. Mätningar i en riktig webbläsare avgör vad som behövs.
+- **Sparning:** `pyxel.user_data_dir` i webbläsaren lagras i webbläsarens lokala lagring och måste verifieras.
+- **Publicering:** HTML-filen kan läggas ut på t.ex. GitHub Pages, med en länk i README.
+
+**Tester:** att terrängen blir likadan med `workers=0` och tidsbudget som med arbetsprocesser (befintligt test i [test_world.py](tests/test_world.py), utökat) och att tidsbudgeten hålls. **Klart när:** HTML-versionen startar, går att flyga i minst 20 FPS och sparar vrak och platser.
+
+---
+
+#### Ordning och beroenden
+
+| Delfas | Storlek | Beroende av | Värde |
+|---|---|---|---|
+| 7a Sparad data | Liten | – | Grund för allt som ska finnas kvar |
+| 7b Flygfält | Medel | 7a | Mål att flyga till, landningar som räknas |
+| 7c Tidslopp | Medel | 7a, 7b | Utmaning med rekord |
+| 7d Träd, byar, fyrar | Stor | grund 2–3 | Levande värld, landmärken |
+| 7e Väder | Medel | – | Variation, svårighet |
+| 7f Webb | Medel | allt ovan | Delbart |
+
+**Fler idéer** som kan få egna delfaser senare:
+- Bränsle och räckvidd, kopplat till flygfälten.
+- Fler flygplanstyper med olika `AircraftSettings` och sprites.
+- Utmärkelser, till exempel *landa på 10 fält* eller *loopa under 50 enheter*.
+- Fotoläge (dölj HUD, fri kamera och `pyxel.screen.save`).
+- Repris av den senaste minuten.
+- Floder som skär genom terrängen.
+- Trafik i form av andra plan som följer banor mellan flygfälten.
 
 ## Prestanda och risker
 
