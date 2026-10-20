@@ -13,7 +13,7 @@ SEED = 1337
 # Terrain levels of detail kept around the camera, finest first: (cells per
 # side, world units per cell). Each must reach far enough for the depth range
 # the renderer assigns it.
-TERRAIN_LEVELS = [(1024, 1.0), (1024, 2.0), (512, 8.0)]
+TERRAIN_LEVELS = [(1024, 1.0), (1024, 2.0), (1024, 8.0), (512, 32.0)]
 # Background processes generating terrain tiles.
 TERRAIN_WORKERS = 2
 

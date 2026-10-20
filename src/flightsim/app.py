@@ -11,6 +11,8 @@ Keyboard / gamepad (see also ``controls.py``):
     M, gamepad X                  map (Z / X or shoulders to zoom)
     ESC / P, gamepad START        pause menu
     ENTER / SPACE, gamepad A      confirm
+    C, gamepad Y                  cockpit / chase camera
+    T, right stick click          time of day: day, dusk, night
     G                             free "ghost" camera; leaving it respawns there
     F1                            debug info
 
@@ -27,10 +29,13 @@ import numpy as np
 import pyxel
 
 from flightsim import config
+from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
 from flightsim.render import palette
+from flightsim.render.clouds import CloudLayer
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
+from flightsim.render.sprites import PLANE_REAR, TRANSPARENT, make_image
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.render.worldmap import (
     ZOOMS,
@@ -40,6 +45,7 @@ from flightsim.render.worldmap import (
 )
 from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
+from flightsim.sim.chase import ChaseCamera, project
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
@@ -98,7 +104,12 @@ class App:
         self.renderer = VoxelRenderer(W, H)
         self.hud = Hud(self.renderer.focal, config.RESPAWN_DELAY)
         self.camera = Camera()
+        self.chase = ChaseCamera()
+        self.chase_view = False
         self.aircraft = Aircraft()
+        self.clouds: CloudLayer | None = None
+        self.time = 0.0  # simulated seconds, drives waves and cloud drift
+        self.lighting = 0  # index into palette.LIGHTINGS
         self.mode = Mode.TITLE
         self.ghost = False
         self.menu_index = 0
@@ -120,6 +131,8 @@ class App:
         )
         palette.install()
         self.title_images = make_title_images(config.TITLE.upper())
+        self.plane_sprite = make_image(PLANE_REAR)
+        self.audio = Audio()
         pyxel.run(self.update, self.draw)
 
     # --- update -----------------------------------------------------------
@@ -127,6 +140,11 @@ class App:
     def update(self) -> None:
         if pressed(Action.DEBUG):
             self.show_debug = not self.show_debug
+        if pressed(Action.TIME_OF_DAY):
+            self.lighting = (self.lighting + 1) % len(palette.LIGHTINGS)
+            palette.install(palette.LIGHTINGS[self.lighting])
+        if self.mode is not Mode.FLYING or self.ghost:
+            self.audio.silence()
         match self.mode:
             case Mode.TITLE:
                 self.update_title()
@@ -150,7 +168,9 @@ class App:
         if seed != self.seed:
             self.seed = seed
             self.preview = WorldMap(TerrainGenerator(seed))
+            self.audio.menu_move()
         if pressed(Action.CONFIRM):
+            self.audio.menu_confirm()
             self.start_world()
         elif pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_Q):
             pyxel.quit()
@@ -161,6 +181,9 @@ class App:
         sea_level = self.world.generator.settings.sea_level
         self.aircraft = Aircraft(settings=AircraftSettings(sea_level=sea_level))
         self.camera = Camera()
+        self.chase.reset()
+        self.clouds = CloudLayer(self.seed)
+        self.time = 0.0
         self.ghost = False
         # Background workers generate the starting area while a progress bar
         # is shown; afterwards they keep generating as the camera moves.
@@ -193,10 +216,17 @@ class App:
             return
         if pressed(Action.GHOST):
             self.toggle_ghost()
+        if pressed(Action.CAMERA):
+            self.chase_view = not self.chase_view
+            self.chase.reset()
+        self.time += DT
         if self.ghost:
             self.move_ghost()
         else:
             self.fly()
+            plane = self.aircraft
+            agl = plane.altitude - self.world.height_at(plane.x, plane.y)
+            self.audio.update(plane, agl)
         self.world.update(self.camera.x, self.camera.y)
 
     def update_paused(self) -> None:
@@ -205,10 +235,13 @@ class App:
             return
         if pressed(Action.UP):
             self.menu_index = (self.menu_index - 1) % len(PAUSE_ITEMS)
+            self.audio.menu_move()
         if pressed(Action.DOWN):
             self.menu_index = (self.menu_index + 1) % len(PAUSE_ITEMS)
+            self.audio.menu_move()
         if not pressed(Action.CONFIRM):
             return
+        self.audio.menu_confirm()
         match PAUSE_ITEMS[self.menu_index]:
             case "RESUME":
                 self.mode = Mode.FLYING
@@ -239,6 +272,7 @@ class App:
     def respawn_here(self) -> None:
         plane = self.aircraft
         plane.respawn(plane.x, plane.y, plane.heading, self.world.height_at)
+        self.chase.reset()
 
     def fly(self) -> None:
         plane = self.aircraft
@@ -254,6 +288,9 @@ class App:
         plane, cam = self.aircraft, self.camera
         if plane.state is FlightState.CRASHED:
             self.watch_crash_site()
+            return
+        if self.chase_view:
+            self.chase.update(plane, cam, DT, self.world.height_at)
             return
         cam.x, cam.y = plane.x, plane.y
         cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
@@ -330,12 +367,37 @@ class App:
 
     def draw_view(self) -> None:
         start = time.perf_counter()
-        self.renderer.render(screen_array(), self.world.levels, self.camera)
+        self.renderer.render(
+            screen_array(), self.world.levels, self.camera, self.time, self.clouds
+        )
         self.render_time.add(time.perf_counter() - start)
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
-        else:
-            self.hud.draw(self.aircraft, self.camera, self.world)
+            return
+        chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
+        if chase:
+            self.draw_plane()
+        self.hud.draw(self.aircraft, self.camera, self.world, cockpit=not chase)
+
+    def draw_plane(self) -> None:
+        """The aircraft sprite as seen from the chase camera."""
+        plane, cam = self.aircraft, self.camera
+        spot = project(cam, self.renderer.focal, W, H, plane.x, plane.y, plane.altitude)
+        if spot is None:
+            return
+        x, y, _ = spot
+        img = self.plane_sprite
+        pyxel.blt(
+            x - img.width / 2,
+            y - img.height / 2,
+            img,
+            0,
+            0,
+            img.width,
+            img.height,
+            TRANSPARENT,
+            rotate=math.degrees(plane.roll - cam.roll),
+        )
 
     def draw_title(self) -> None:
         self.preview.draw(0.0, 0.0, TITLE_MAP_STEP)

@@ -18,13 +18,22 @@ distance and avoids shimmering from undersampling fine detail far away.
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from flightsim.render import palette
 from flightsim.sim.camera import Camera
+from flightsim.terrain.biomes import Biome
 from flightsim.terrain.noise import smoothstep
 from flightsim.terrain.world import TerrainLevel
+
+if TYPE_CHECKING:
+    from flightsim.render.clouds import CloudLayer
+
+# Water biomes come first in the palette, so water colours are a single range.
+WATER_BIOMES = 2
+assert Biome.DEEP_WATER == 0 and Biome.WATER == 1
 
 # 4x4 ordered-dither thresholds in [0, 1).
 _BAYER = (
@@ -39,15 +48,19 @@ _BAYER = (
 class RenderSettings:
     fov_degrees: float = 90.0
     z_near: float = 1.0
-    z_far: float = 700.0
+    # Far enough to see the ground when flying well above the mountains.
+    z_far: float = 2500.0
     # Depth step starts at dz_start and grows by dz_growth per slice: dense
     # sampling close to the camera, sparse far away.
     dz_start: float = 0.5
     dz_growth: float = 1.02
     # Fog starts at this fraction of z_far and is complete at z_far.
-    fog_start: float = 0.3
+    fog_start: float = 0.25
     # Sky gradient spans this many pixels above the horizon.
     sky_span: float = 110.0
+    # Water waves: shade shift amplitude (in shade steps) and wave speed.
+    wave_strength: float = 0.7
+    wave_speed: float = 1.5
 
 
 class VoxelRenderer:
@@ -75,9 +88,7 @@ class VoxelRenderer:
             :height, :width
         ]
         # Continuous fog level per depth slice, 0 (clear) .. FOG_LEVELS (sky).
-        self.fog = (
-            smoothstep(s.fog_start * s.z_far, s.z_far, self.z) * palette.FOG_LEVELS
-        )
+        self.fog = self.fog_for(self.z)
 
         self._cols = np.arange(width)
         self._rows = np.arange(height)[:, None]
@@ -104,12 +115,27 @@ class VoxelRenderer:
                 start = end
         return ranges
 
+    def fog_for(self, z: np.ndarray) -> np.ndarray:
+        """Continuous fog level for depth ``z``: 0 (clear) .. FOG_LEVELS (sky)."""
+        s = self.settings
+        return smoothstep(s.fog_start * s.z_far, s.z_far, z) * palette.FOG_LEVELS
+
     def render(
-        self, out: np.ndarray, levels: Sequence[TerrainLevel], camera: Camera
+        self,
+        out: np.ndarray,
+        levels: Sequence[TerrainLevel],
+        camera: Camera,
+        time: float = 0.0,
+        clouds: CloudLayer | None = None,
     ) -> None:
-        """Draw terrain and sky into ``out`` (``(height, width)`` palette indices).
+        """Draw terrain, sky and clouds into ``out`` (``(height, width)`` palette indices).
 
         ``levels`` go from finest to coarsest; each should be centred near the camera.
+        ``time`` in seconds drives the water waves and cloud drift.
+
+        Afterwards ``pixel_depth`` holds the depth of the terrain seen in each
+        pixel (infinite for sky) and ``horizon`` the horizon row per column,
+        for anything drawn on top that needs to be hidden behind terrain.
         """
         n_z = len(self.z)
         z = self.z[:, None]
@@ -125,6 +151,7 @@ class VoxelRenderer:
             iy, ix = level.indices(wx[rows], wy[rows])
             heights[rows] = level.heights[iy, ix]
             colors[rows] = level.colors[iy, ix]
+        self._animate_water(colors, wx, wy, time)
 
         # Pitch moves the horizon up and down; roll tilts it by shearing columns.
         horizon = (
@@ -157,4 +184,32 @@ class VoxelRenderer:
             np.int32
         )
 
-        out[:] = np.where(is_sky, sky, ground)
+        image = np.where(is_sky, sky, ground)
+        self.horizon = horizon
+        self.pixel_depth = np.where(is_sky, np.inf, self.z[depth])
+        if clouds is not None:
+            clouds.draw(image, self, camera, time)
+        out[:] = image
+
+    def _animate_water(
+        self, colors: np.ndarray, wx: np.ndarray, wy: np.ndarray, time: float
+    ) -> None:
+        """Shift water shades up and down with waves travelling across the surface.
+
+        The pattern is a function of world position and time, so the waves
+        move over the water instead of sticking to the screen.
+        """
+        offset = colors.astype(np.int32) - palette.TERRAIN_BASE
+        water = (offset >= 0) & (offset < WATER_BIOMES * palette.SHADES)
+        if not water.any():
+            return
+        x, y, t = wx[water], wy[water], time * self.settings.wave_speed
+        wave = (
+            np.sin(x * 0.11 + y * 0.03 + t)
+            + np.sin(y * 0.09 - x * 0.05 - t * 0.7)
+            + 0.5 * np.sin(x * 0.31 - y * 0.27 + t * 2.3)
+        ) / 2.5
+        shift = np.round(wave * self.settings.wave_strength).astype(np.int32)
+        offset = offset[water]
+        shade = np.clip(offset % palette.SHADES + shift, 0, palette.SHADES - 1)
+        colors[water] = palette.TERRAIN_BASE + offset - offset % palette.SHADES + shade

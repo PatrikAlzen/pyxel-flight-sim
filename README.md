@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–5 klara: startskärm med seed-val, flygbart plan med HUD och minikarta i en oändlig procedurell 3D-värld, karta, pausmeny och gamepad-stöd. Nästa steg: fas 6, polish (ljud, moln, jaktkamera).
+> **Status:** fas 0–6 klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: idéerna i fas 7.
 
 ---
 
@@ -205,11 +205,12 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
 | `F1` | – | Debug-överlägg (FPS, tiles, koordinater, flygtillstånd) |
 | `Esc` / `Q` på startskärmen | – | Avsluta |
-| `C` | `Y` | Byt kameravy (fas 6) |
+| `C` | `Y` | Cockpit / jaktkamera |
+| `T` | Höger spak (klick) | Tid på dygnet: dag → skymning → natt |
 
 ### Ljud
 
-Pyxels inbyggda ljudmotor: motorljud vars tonhöjd följer gasen, vindbrus som följer farten, varningspip vid överstegring och en explosion vid krasch.
+Pyxels inbyggda ljudmotor: motorljud vars tonhöjd följer gasen, vindbrus som följer farten, varningstoner för STALL och PULL UP, en krasch och blip-ljud i menyerna (se fas 6).
 
 ## Projektstruktur
 
@@ -232,14 +233,16 @@ pyxel-flight-sim/
 │       ├── render/
 │       │   ├── palette.py     # palettdefinition och färgramper
 │       │   ├── voxel.py       # Voxel Space-renderare (NumPy) med himmel och dimma
-│       │   ├── sky.py         # moln (fas 6)
+│       │   ├── clouds.py      # molnlager på fast höjd, skyms av terräng
+│       │   ├── sprites.py     # pixelgrafik som text (flygplanet)
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
 │       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
-│       │   └── camera.py      # kamerans position och orientering, kameralägen
-│       ├── audio.py           # ljud och musik
+│       │   ├── camera.py      # kamerans position och orientering
+│       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
+│       ├── audio.py           # motor, vind, varningar, krasch, menyljud
 │       └── controls.py        # tangentbord/gamepad → abstrakta kommandon
 └── tests/
     ├── test_noise.py          # determinism, värdeintervall, kontinuitet
@@ -249,7 +252,8 @@ pyxel-flight-sim/
     ├── test_world.py          # fönster som följer kameran, stegvis = nyfyllt, arbetsprocesser
     ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
     ├── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
-    └── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
+    ├── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
+    └── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
 ```
 
 ## Implementationsplan
@@ -297,7 +301,7 @@ Lärdomar:
 
 **Resultat:**
 - `uv run flightsim` startar 3D-vyn. En förloppsindikator visas medan terrängen genereras (~3 s), sedan styr man en fri kamera. Kontroller: `↑/↓` framåt/bakåt, `←/→` sväng, `A/D` sidled, `W/S` upp/ned, `R/F` titta upp/ned, `Z/X` roll, `V` nollställ vy, `Shift` snabbare, `F1` debuginfo.
-- **Terrängnivåer (LOD):** tre nivåer i `config.TERRAIN_LEVELS`: 1024² celler med steg 1 (nära, upp till ~270 enheter), 1024² med steg 2 (till ~540) och 512² med steg 8 (till 700). Grövre nivåer längre bort ger både längre sikt och mindre flimmer. Renderaren väljer automatiskt den finaste nivå som täcker varje djupsteg.
+- **Terrängnivåer (LOD):** (utökat till fyra nivåer och 2500 enheters sikt i fas 6) tre nivåer i `config.TERRAIN_LEVELS`: 1024² celler med steg 1 (nära, upp till ~270 enheter), 1024² med steg 2 (till ~540) och 512² med steg 8 (till 700). Grövre nivåer längre bort ger både längre sikt och mindre flimmer. Renderaren väljer automatiskt den finaste nivå som täcker varje djupsteg.
 - **Ringbuffert:** varje nivå (`TerrainLevel`) lagrar världscell (x, y) på index `(x mod N, y mod N)`. Renderaren slår upp med en bitmask och behöver aldrig veta var fönstret ligger. I fas 3 räcker det därför att skriva över de tiles som scrollat ut.
 - **Dimma och himmel:** paletten har nu tre dimkopior av terrängfärgerna (klar, 35 %, 68 %) och 8 himmelsnyanser, totalt 204 färger. Dimnivån per pixel ditheras mellan kopiorna, och fullt dimmig terräng har exakt samma färg som himlen vid horisonten. Därför smälter fjärran berg in i himlen utan synlig kant.
 - **Tipp och roll** stöds redan i renderaren: tipp flyttar horisonten, roll skjuvar varje kolumn.
@@ -364,10 +368,27 @@ Lärdomar:
 - Provkörd i riktigt fönster med inspelade tangenttryckningar genom hela flödet (seed-byte, start, bank, karta, zoom, paus, menynavigering, fortsätt): 30 FPS under flygning.
 - **Inte provat:** en riktig fysisk gamepad. Mappningen är testad mot Pyxels gamepad-konstanter, men axelriktningar och triggers kan skilja mellan kontroller.
 
-### Fas 6 – Polish
-- [ ] Ljud: motor, vind, varningar, krasch.
-- [ ] Animerat vatten (palettcykling), moln, ev. dag/natt via palettbyte.
-- [ ] Jaktkameraläge med flygplanssprite (ritas i Pyxels editor, `pyxel edit`).
+### Fas 6 – Polish ✅
+- [x] Ljud: motor, vind, varningar, krasch.
+- [x] Animerat vatten, moln, dag/natt via palettbyte.
+- [x] Jaktkameraläge med flygplanssprite.
+
+**Resultat:**
+- **Ljud** ([audio.py](src/flightsim/audio.py)): fyra kanaler.
+  - Motor: 8 förbyggda loopar vars tonhöjd följer gasen.
+  - Vind: brus i 5 nivåer som följer farten.
+  - Varningar: STALL och PULL UP som loopar så länge varningen gäller.
+  - Engångsljud: krasch och menyljud.
+  - Pyxel kan inte ändra tonhöjden på ett ljud som spelas, så kanalen byter mellan förbyggda loopar på 0,1 s. Bytet hörs inte.
+  - Valet av vad som ska spelas (`SoundState.choose`) är rena funktioner och testas utan ljudkort. Varningsregeln (`Aircraft.alert`) delas mellan HUD och ljud.
+  - Ljudet tystnar i paus, på kartan och i spökkameran.
+- **Vatten:** i stället för palettcykling skjuts vattnets skuggnivå ±1 av ett vågmönster som räknas i *världskoordinater* och tid. Vågorna rör sig över ytan och följer inte skärmen. Land påverkas inte (testat).
+- **Moln** ([render/clouds.py](src/flightsim/render/clouds.py)): ett molnlager på höjd 380 med en sömlöst upprepad brustextur som driver med vinden. Varje pixels stråle skärs mot lagret med samma projektion som terrängen och jämförs med terrängens djup i samma pixel. Det fungerar under och ovanför molnen, berg skymmer moln och de högsta topparna sticker upp. Kanterna ditheras och undersidan är gråare än ovansidan. Molnen syns 1,6 gånger längre än terrängen.
+- **Längre sikt:** molnen visade att 700 enheters sikt var för kort. Från 600 enheters höjd syntes marken knappt. Nu är siktavståndet 2500 med fyra terrängnivåer (1024²@1, 1024²@2, 1024²@8, 512²@32), och renderingen tar fortfarande ~4 ms (`--bench`) eller ~7 ms i fönster med moln.
+- **Jaktkamera** (`C`): kameran sitter 26 enheter bakom planet längs flygbanan och ligger lite efter i svängar. Den kopierar 40 % av planets roll och 60 % av tippen och hålls ovanför marken. Planet ritas som en sprite ([render/sprites.py](src/flightsim/render/sprites.py)), placerad med samma projektion som renderaren och roterad med skillnaden i roll. Spriten är definierad som text i koden i stället för i `pyxel edit`, så att den kan versionshanteras och granskas. Tipp-stegen döljs i jaktvyn.
+- **Tid på dygnet** (`T`): dag, skymning och natt genom att bygga om paletten med tonad terräng och ny dimma och himmel. Det kostar ingenting per bildruta. HUD-färgerna (0–15) är oförändrade, och fullt dimmig terräng matchar alltid horisonten (testat för alla tre).
+- **Prestanda i fönster:** stabila 30 FPS. Inget update- eller draw-anrop tar över ~18 ms. Den enda längre bildrutan i provkörningen kom från att testskriptet sparade skärmbilder.
+- 14 nya tester (totalt 85).
 
 ### Fas 7 – Idéer för senare
 - Landningsbanor och flygplatser placerade procedurellt på plana ytor.

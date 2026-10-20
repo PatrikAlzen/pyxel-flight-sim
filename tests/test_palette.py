@@ -1,3 +1,5 @@
+import pytest
+
 from flightsim.render import palette
 from flightsim.terrain.biomes import Biome
 
@@ -17,9 +19,22 @@ def test_palette_layout():
     assert len(colors) == palette.SKY_BASE + palette.SKY_COLORS
 
 
-def test_fully_fogged_matches_horizon_sky():
-    colors = palette.colors()
-    assert colors[palette.SKY_BASE] == palette.FOG_COLOR
+@pytest.mark.parametrize("lighting", palette.LIGHTINGS, ids=lambda lt: lt.name)
+def test_fully_fogged_matches_horizon_sky(lighting):
+    colors = palette.colors(lighting)
+    assert colors[palette.SKY_BASE] == lighting.fog
+    assert len(colors) == len(palette.colors())
+
+
+def test_night_is_darker_than_day():
+    def brightness(rgb):
+        return sum((rgb >> s) & 0xFF for s in (16, 8, 0))
+
+    grass = palette.biome_color(Biome.GRASS, palette.SHADES - 1)
+    day, night = palette.colors(palette.DAY), palette.colors(palette.NIGHT)
+    assert brightness(night[grass]) < brightness(day[grass]) / 2
+    # HUD colours are untouched.
+    assert night[: palette.TERRAIN_BASE] == day[: palette.TERRAIN_BASE]
 
 
 def test_first_fog_copy_is_clear_terrain():

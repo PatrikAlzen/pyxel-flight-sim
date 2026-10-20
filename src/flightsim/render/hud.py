@@ -16,7 +16,7 @@ import numpy as np
 import pyxel
 
 from flightsim.render.framebuffer import screen_array
-from flightsim.sim.aircraft import Aircraft, FlightState
+from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.terrain.world import TerrainWorld
 
@@ -58,15 +58,20 @@ class Hud:
         self.focal = focal
         self.respawn_delay = respawn_delay
 
-    def draw(self, plane: Aircraft, camera: Camera, world: TerrainWorld) -> None:
+    def draw(
+        self, plane: Aircraft, camera: Camera, world: TerrainWorld, cockpit: bool = True
+    ) -> None:
+        """Draw all instruments. The pitch ladder and aircraft symbol only make
+        sense looking out of the cockpit, so the chase view leaves them out."""
         ground = world.height_at(plane.x, plane.y)
         agl = plane.altitude - plane.settings.gear_height - ground
         self.minimap(plane, world)  # writes pixels directly, so it goes first
         if plane.state is FlightState.CRASHED:
             self.crash_message(plane)
             return
-        self.pitch_ladder(camera)
-        self.aircraft_symbol()
+        if cockpit:
+            self.pitch_ladder(camera)
+            self.aircraft_symbol()
         self.compass(plane.heading)
         self.speed_tape(plane)
         self.altitude_tape(plane, agl)
@@ -229,7 +234,9 @@ class Hud:
         rx, ry = -fy, fx
         wx = plane.x + right * rx + ahead * fx
         wy = plane.y + right * ry + ahead * fy
-        level = world.levels[-1]
+        # Finest level that still covers the minimap's corners.
+        reach = size / 2 * MINIMAP_SCALE * math.sqrt(2)
+        level = next(lv for lv in world.levels if lv.safe_radius >= reach)
         iy, ix = level.indices(wx, wy)
         screen_array()[y0 : y0 + size, x0 : x0 + size] = level.colors[iy, ix]
 
@@ -246,17 +253,11 @@ class Hud:
     def messages(self, plane: Aircraft, agl: float) -> None:
         blink = pyxel.frame_count // 8 % 2 == 0
         h = pyxel.height
-        sinking_low = (
-            plane.state is FlightState.FLYING and agl < 40 and plane.vertical_speed < -8
-        )
-        if plane.stalling:
-            warning = ("STALL", WARN)
-        elif sinking_low:
-            warning = ("PULL UP", CAUTION)
-        else:
-            warning = None
-        if warning and blink:
-            centered_text(h // 2 + 14, *warning)
+        match plane.alert(agl):
+            case Alert.STALL if blink:
+                centered_text(h // 2 + 14, "STALL", WARN)
+            case Alert.PULL_UP if blink:
+                centered_text(h // 2 + 14, "PULL UP", CAUTION)
         if plane.state is FlightState.LANDED:
             hint = (
                 "LANDED"

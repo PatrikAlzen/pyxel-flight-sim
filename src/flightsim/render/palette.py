@@ -13,6 +13,8 @@ Layout of the 256 palette slots:
   colour, so fully fogged terrain melts into the sky) up to the zenith.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pyxel
 
@@ -47,6 +49,22 @@ RAMPS: dict[Biome, tuple[int, int]] = {
 }
 
 
+@dataclass(frozen=True)
+class Lighting:
+    """Time of day, applied by rebuilding the palette rather than the image."""
+
+    name: str
+    tint: tuple[float, float, float]  # multiplies terrain RGB
+    fog: int  # haze colour, also the sky at the horizon
+    zenith: int  # sky colour straight up
+
+
+DAY = Lighting("DAY", (1.0, 1.0, 1.0), FOG_COLOR, SKY_ZENITH)
+DUSK = Lighting("DUSK", (1.0, 0.72, 0.58), 0xE8A27A, 0x3A2E6A)
+NIGHT = Lighting("NIGHT", (0.3, 0.36, 0.55), 0x1E2A48, 0x05070F)
+LIGHTINGS = [DAY, DUSK, NIGHT]
+
+
 def biome_color(biome: np.ndarray | int, shade: np.ndarray | int) -> np.ndarray:
     """Palette index for a biome at a shade level (0 = darkest, SHADES - 1 = brightest)."""
     return (TERRAIN_BASE + np.asarray(biome) * SHADES + np.asarray(shade)).astype(
@@ -62,23 +80,37 @@ def _lerp_rgb(a: int, b: int, t: float) -> int:
     return (channels[0] << 16) | (channels[1] << 8) | channels[2]
 
 
-def colors() -> list[int]:
+def _tint(rgb: int, tint: tuple[float, float, float]) -> int:
+    channels = [
+        min(255, round(((rgb >> s) & 0xFF) * t)) for s, t in zip((16, 8, 0), tint)
+    ]
+    return (channels[0] << 16) | (channels[1] << 8) | channels[2]
+
+
+def colors(lighting: Lighting = DAY) -> list[int]:
     """The full palette as 24-bit RGB values."""
     terrain = []
     for biome in Biome:
         dark, light = RAMPS[biome]
-        terrain += [_lerp_rgb(dark, light, i / (SHADES - 1)) for i in range(SHADES)]
+        terrain += [
+            _tint(_lerp_rgb(dark, light, i / (SHADES - 1)), lighting.tint)
+            for i in range(SHADES)
+        ]
 
     result = list(pyxel.DEFAULT_COLORS)
     for blend in FOG_BLEND:
-        result += [_lerp_rgb(c, FOG_COLOR, blend) for c in terrain]
+        result += [_lerp_rgb(c, lighting.fog, blend) for c in terrain]
     result += [
-        _lerp_rgb(FOG_COLOR, SKY_ZENITH, i / (SKY_COLORS - 1))
+        _lerp_rgb(lighting.fog, lighting.zenith, i / (SKY_COLORS - 1))
         for i in range(SKY_COLORS)
     ]
     return result
 
 
-def install() -> None:
-    """Replace Pyxel's palette with the game palette. Call after ``pyxel.init``."""
-    pyxel.colors[:] = colors()
+def install(lighting: Lighting = DAY) -> None:
+    """Replace Pyxel's palette with the game palette. Call after ``pyxel.init``.
+
+    Everything on screen changes at once, which is what makes switching the
+    time of day free.
+    """
+    pyxel.colors[:] = colors(lighting)

@@ -76,6 +76,11 @@ class FlightState(Enum):
     CRASHED = auto()
 
 
+class Alert(Enum):
+    STALL = auto()
+    PULL_UP = auto()
+
+
 @dataclass
 class Controls:
     """Pilot input, each axis in [-1, 1]."""
@@ -118,6 +123,14 @@ class Aircraft:
         return (
             self.state is FlightState.FLYING and self.speed < self.settings.stall_speed
         )
+
+    def alert(self, agl: float) -> Alert | None:
+        """The most urgent cockpit alert at ``agl`` units above the ground."""
+        if self.stalling:
+            return Alert.STALL
+        if self.state is FlightState.FLYING and agl < 40 and self.vertical_speed < -8:
+            return Alert.PULL_UP
+        return None
 
     def respawn(self, x: float, y: float, heading: float, ground: Ground) -> None:
         """Start flying again above (x, y)."""
