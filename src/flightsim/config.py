@@ -29,6 +29,10 @@ MAX_WRECKS = 100  # old crash sites kept in the world; the oldest go first
 WRECK_DRAW_DISTANCE = 600.0  # wrecks further away are too small to see
 WRECK_SMOKE_DISTANCE = 1500.0  # old wrecks this close smoulder, visible from afar
 
+# Saved data (wrecks, places) per seed, under Pyxel's user data directory.
+SAVE_VENDOR = "pyxel-flight-sim"
+PLACE_MIN_CLEARANCE = 20.0  # a saved place never drops the plane closer to the ground
+
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame
 GHOST_FAST = 5.0  # speed multiplier while SHIFT is held

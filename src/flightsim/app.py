@@ -31,6 +31,7 @@ import pyxel
 from flightsim import config
 from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
+from flightsim.persist import Place, SaveStore, WorldSave
 from flightsim.render import palette
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import draw_particles, draw_wrecks
@@ -56,7 +57,9 @@ W, H = config.SCREEN_W, config.SCREEN_H
 DT = 1 / config.FPS
 MAX_PITCH = math.radians(89)  # ghost camera; it can roll freely
 TITLE_MAP_STEP = 32
-PAUSE_ITEMS = ["RESUME", "RESPAWN", "NEW WORLD", "QUIT"]
+PAUSE_ITEMS = ["RESUME", "RESPAWN", "PLACES", "NEW WORLD", "QUIT"]
+PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
+TOAST_SECONDS = 2.0
 
 
 class Mode(Enum):
@@ -81,6 +84,10 @@ class Timer:
 
     def add(self, seconds: float) -> None:
         self.ms += (seconds * 1000 - self.ms) * 0.1
+
+
+def plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}S"
 
 
 def make_title_images(text: str) -> tuple[pyxel.Image, pyxel.Image]:
@@ -118,6 +125,14 @@ class App:
         self.mode = Mode.TITLE
         self.ghost = False
         self.menu_index = 0
+        self.places_menu = False
+        self.store: SaveStore | None = None  # needs Pyxel, so set after init
+        self.saved: WorldSave | None = None
+        self.title_summary: tuple[int, tuple[int, int]] | None = None  # (seed, counts)
+        # Where loading drops the plane: x, y, heading, altitude (None = default).
+        self.spawn: tuple[float, float, float, float | None] = (0.0, 0.0, 0.0, None)
+        self.toast = ""
+        self.toast_until = 0.0
         self.map_zoom = ZOOMS.index(16)
         self.load_total = 1
         self.progress = 0.0
@@ -139,6 +154,7 @@ class App:
         self.plane_sprite = make_image(PLANE_REAR)
         self.wreck_sprite = make_image(PLANE_WRECK)
         self.audio = Audio()
+        self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
         pyxel.run(self.update, self.draw)
 
     # --- update -----------------------------------------------------------
@@ -177,6 +193,7 @@ class App:
             self.audio.menu_move()
         if pressed(Action.CONFIRM):
             self.audio.menu_confirm()
+            self.title_summary = None
             self.start_world()
         elif pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_Q):
             pyxel.quit()
@@ -191,11 +208,23 @@ class App:
         self.clouds = CloudLayer(self.seed)
         self.particles.clear()
         self.wrecks.clear()
+        self.saved = self.store.load(self.seed)
+        for wreck in self.saved.wrecks:
+            self.wrecks.add(np.array(wreck))
         self.time = 0.0
         self.ghost = False
-        # Background workers generate the starting area while a progress bar
-        # is shown; afterwards they keep generating as the camera moves.
-        self.world.update(0.0, 0.0)
+        self.begin_loading(0.0, 0.0, 0.0)
+
+    def begin_loading(
+        self, x: float, y: float, heading: float, altitude: float | None = None
+    ) -> None:
+        """Show a progress bar while the terrain around (x, y) is generated.
+
+        Background workers generate the area; afterwards they keep generating
+        as the camera moves. The plane is placed there once everything is in.
+        """
+        self.spawn = (x, y, heading, altitude)
+        self.world.update(x, y)
         self.load_total = max(1, self.world.pending)
         self.progress = 0.0
         self.mode = Mode.LOADING
@@ -206,19 +235,35 @@ class App:
         self.world = self.world_map = None
 
     def update_loading(self) -> None:
-        self.world.update(0.0, 0.0)
+        x, y, heading, altitude = self.spawn
+        self.world.update(x, y)
         pending = self.world.pending
         self.progress = 1 - pending / self.load_total
         if pending == 0:
-            self.aircraft.respawn(0.0, 0.0, 0.0, self.world.height_at)
-            self.follow_aircraft()
+            self.place_aircraft(x, y, heading, altitude)
             self.mode = Mode.FLYING
+
+    def place_aircraft(
+        self, x: float, y: float, heading: float, altitude: float | None
+    ) -> None:
+        """Fly on from (x, y), at ``altitude`` if given but never close to the ground."""
+        plane = self.aircraft
+        plane.respawn(x, y, heading, self.world.height_at)
+        if altitude is not None:
+            ground = self.world.height_at(x, y)
+            plane.altitude = max(altitude, ground + config.PLACE_MIN_CLEARANCE)
+        self.ghost = False
+        self.chase.reset()
+        self.follow_aircraft()
 
     def update_flying(self) -> None:
         if pressed(Action.PAUSE):
             self.menu_index = 0
+            self.places_menu = False
             self.mode = Mode.PAUSED
             return
+        if pressed(Action.SAVE_PLACE):
+            self.save_place()
         if pressed(Action.MAP):
             self.mode = Mode.MAP
             return
@@ -243,6 +288,9 @@ class App:
         self.world.update(self.camera.x, self.camera.y)
 
     def update_paused(self) -> None:
+        if self.places_menu:
+            self.update_places_menu()
+            return
         if pressed(Action.PAUSE) or pressed(Action.BACK):
             self.mode = Mode.FLYING
             return
@@ -261,11 +309,83 @@ class App:
             case "RESPAWN":
                 self.respawn_here()
                 self.mode = Mode.FLYING
+            case "PLACES":
+                self.places_menu = True
+                self.menu_index = 0
             case "NEW WORLD":
                 self.close_world()
                 self.mode = Mode.TITLE
             case "QUIT":
                 pyxel.quit()
+
+    def places_menu_items(self) -> list[str | Place]:
+        return ["SAVE HERE", *self.saved.places, "BACK"]
+
+    def update_places_menu(self) -> None:
+        """Save, visit or delete places: a list under PLACES in the pause menu."""
+        items = self.places_menu_items()
+        if pressed(Action.BACK) or pressed(Action.PAUSE):
+            self.places_menu = False
+            self.menu_index = PAUSE_ITEMS.index("PLACES")
+            return
+        if pressed(Action.UP):
+            self.menu_index = (self.menu_index - 1) % len(items)
+            self.audio.menu_move()
+        if pressed(Action.DOWN):
+            self.menu_index = (self.menu_index + 1) % len(items)
+            self.audio.menu_move()
+        item = items[self.menu_index]
+        if pressed(Action.DELETE) and isinstance(item, Place):
+            self.saved.places.remove(item)
+            self.persist()
+            self.menu_index = min(self.menu_index, len(items) - 2)
+            self.audio.menu_move()
+            return
+        if not pressed(Action.CONFIRM):
+            return
+        self.audio.menu_confirm()
+        if item == "SAVE HERE":
+            self.save_place()
+        elif item == "BACK":
+            self.places_menu = False
+            self.menu_index = PAUSE_ITEMS.index("PLACES")
+        else:
+            self.go_to(item)
+
+    def save_place(self) -> None:
+        """Remember where the plane (or the ghost camera) is now."""
+        if self.aircraft.state is FlightState.CRASHED and not self.ghost:
+            return
+        source = self.camera if self.ghost else self.aircraft
+        place = self.saved.add_place(
+            source.x, source.y, source.altitude, source.heading
+        )
+        if self.persist():
+            self.show_toast(f"{place.name} SAVED")
+
+    def go_to(self, place: Place) -> None:
+        """Fly on from a saved place; far jumps wait for the terrain there."""
+        self.places_menu = False
+        here = math.hypot(place.x - self.camera.x, place.y - self.camera.y)
+        if here > self.world.levels[0].safe_radius:
+            self.begin_loading(place.x, place.y, place.heading, place.altitude)
+        else:
+            self.place_aircraft(place.x, place.y, place.heading, place.altitude)
+            self.mode = Mode.FLYING
+        self.show_toast(place.name)
+
+    def persist(self) -> bool:
+        """Write this world's save file; tell the player if that fails."""
+        try:
+            self.store.save(self.saved)
+            return True
+        except OSError:
+            self.show_toast("COULD NOT SAVE")
+            return False
+
+    def show_toast(self, text: str) -> None:
+        self.toast = text
+        self.toast_until = time.perf_counter() + TOAST_SECONDS
 
     def update_map(self) -> None:
         if pressed(Action.MAP) or pressed(Action.BACK) or pressed(Action.PAUSE):
@@ -308,6 +428,8 @@ class App:
         ground = max(self.world.height_at(plane.x, plane.y), plane.settings.sea_level)
         site = np.array([plane.x, plane.y, ground])
         self.wrecks.add(site)
+        self.saved.wrecks = self.wrecks.positions.tolist()
+        self.persist()
         self.particles.explode(site + [0.0, 0.0, 2.0])
 
     def follow_aircraft(self) -> None:
@@ -385,11 +507,17 @@ class App:
                     plane.heading,
                     ZOOMS[self.map_zoom],
                     self.wrecks.positions,
+                    self.saved.places,
                 )
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
                 if self.mode is Mode.PAUSED:
-                    self.draw_pause_menu()
+                    if self.places_menu:
+                        self.draw_places_menu()
+                    else:
+                        self.draw_pause_menu()
+        if self.toast and time.perf_counter() < self.toast_until:
+            centered_text(32, self.toast, pyxel.COLOR_YELLOW)
         if self.show_debug and self.world:
             self.draw_debug()
 
@@ -446,6 +574,13 @@ class App:
 
         shaded_rect(0, H - 34, W, 34)
         centered_text(H - 30, f"<  SEED {self.seed}  >", pyxel.COLOR_YELLOW)
+        if self.title_summary is None or self.title_summary[0] != self.seed:
+            self.title_summary = (self.seed, self.store.summary(self.seed))
+        wrecks, places = self.title_summary[1]
+        if wrecks or places:
+            shaded_rect(0, 50, W, 10)
+            saved = f"{plural(wrecks, 'WRECK')}, {plural(places, 'PLACE')}"
+            centered_text(52, f"SAVED HERE: {saved}", TEXT)
         centered_text(H - 21, "LEFT/RIGHT CHANGE SEED   R RANDOM", HUD)
         if pyxel.frame_count // 15 % 2 == 0:
             centered_text(H - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
@@ -472,6 +607,30 @@ class App:
             centered_text(
                 y + 17 + i * 10, label, TEXT if selected else pyxel.COLOR_GRAY
             )
+
+    def draw_places_menu(self) -> None:
+        items = self.places_menu_items()
+        first = max(0, min(self.menu_index - PLACE_ROWS // 2, len(items) - PLACE_ROWS))
+        shown = items[first : first + PLACE_ROWS]
+        width, height = 150, 34 + len(shown) * 10
+        x, y = (W - width) // 2, (H - height) // 2
+        shaded_rect(0, 0, W, H)
+        pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
+        pyxel.rectb(x, y, width, height, HUD)
+        centered_text(y + 5, "PLACES", pyxel.COLOR_YELLOW)
+        for row, item in enumerate(shown):
+            i = first + row
+            selected = i == self.menu_index
+            if isinstance(item, Place):
+                away = math.hypot(item.x - self.camera.x, item.y - self.camera.y)
+                label = f"{item.name}  {away:5.0f} AWAY"
+            else:
+                label = item
+            label = f"> {label} <" if selected else label
+            color = TEXT if selected else pyxel.COLOR_GRAY
+            centered_text(y + 17 + row * 10, label, color)
+        hint = "ENTER GO   DEL/X DELETE   ESC BACK"
+        centered_text(y + height - 10, hint, HUD)
 
     def draw_debug(self) -> None:
         cam = self.camera

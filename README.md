@@ -206,6 +206,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `W` / `S` | `R1` / `L1` eller triggers | Öka/minska gas |
 | `A` / `D` | Höger spak X | Sidroder (på marken: styr) |
 | `B` | `B` | Hjulbromsar (på marken) |
+| `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
 | `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, ny värld, avsluta |
@@ -462,7 +463,7 @@ Flimrande pixlar i en testbild: 335 → 89. De som är kvar är enstaka pixlar l
   - Rökens genomskinlighet görs med Pyxels `dither`. Ny rök tonar in så att den inte döljer vraket.
   - Rökfärgerna kommer från klippans palett, så de följer dag, skymning och natt. Elden använder klara standardfärger som lyser även på natten.
   - Vraket ([PLANE_WRECK](src/flightsim/render/sprites.py)) har böjd stjärt, avbruten höger vinge, sot och glöd, och ritas efter partiklarna eftersom flammorna annars täcker det.
-- **Gamla vrak ligger kvar** ([sim/wrecks.py](src/flightsim/sim/wrecks.py)): varje kraschplats i världen sparas, upp till `config.MAX_WRECKS = 100` (de äldsta försvinner först), och listan töms vid ny värld. Vrak inom 600 enheter ritas, skalade efter avstånd och dolda bakom terräng. Vrak som skulle bli under ~3 pixlar hoppas över. Bara det senaste vraket brinner. De äldre **pyr** med en tunn rökslinga, cirka 2,5 partiklar/s slumpat per vrak inom 1500 enheter, så att kraschplatser syns på långt håll. På den stora kartan markeras de med röda kryss. Vraken sparas inte mellan spelsessioner (se fas 7).
+- **Gamla vrak ligger kvar** ([sim/wrecks.py](src/flightsim/sim/wrecks.py)): varje kraschplats i världen sparas, upp till `config.MAX_WRECKS = 100` (de äldsta försvinner först), och listan töms vid ny värld. Vrak inom 600 enheter ritas, skalade efter avstånd och dolda bakom terräng. Vrak som skulle bli under ~3 pixlar hoppas över. Bara det senaste vraket brinner. De äldre **pyr** med en tunn rökslinga, cirka 2,5 partiklar/s slumpat per vrak inom 1500 enheter, så att kraschplatser syns på långt håll. På den stora kartan markeras de med röda kryss. Sedan fas 7a sparas vraken mellan spelsessioner.
 - **Kraschvyn** kommer närmare (40 enheter bort, 18 upp) och cirklar långsamt runt vraket (12°/s). Texten har flyttats till över- och underkanten så att vraket syns, och respawn sker efter 4 s i stället för 3.
 - **Prestanda:** ritningen tar i snitt ~16 ms i kraschvyn med 100–130 partiklar (jämfört med ~14 ms utan).
 - 13 nya tester för partiklar och vrak (totalt 111): explosionens innehåll, jämn brinntakt, att röken stiger med vinden, att gnistorna faller, livslängd, kapacitet, att röken växer och tunnas ut, att partiklar döljs bakom terräng, att gamla vrak pyr samt vraklistans ordning, tak och närhetssökning.
@@ -498,16 +499,29 @@ Flera delfaser behöver samma byggstenar. De byggs en gång och återanvänds.
 
 ---
 
-#### 7a – Sparad data och favoritplatser *(liten, gör först)*
+#### 7a – Sparad data och favoritplatser ✅
 
 Målet är att det man gjort i en värld finns kvar till nästa gång.
 
-- `persist.py` med `WorldSave` (dataklass och JSON) och `load(seed)` / `save(seed, data)`. Grund 4 ovan.
-- Vrak sparas och läses in. `Wrecks` finns redan, så bara serialiseringen behövs.
-- **Favoritplatser:** `L` (eller ett val i pausmenyn; `B` är redan broms) sparar position, kurs och höjd med ett namn ("PLATS 3"). Pausmenyn får valet *Gå till plats…* med en lista, och valet respawnar planet där.
-- På startskärmen visas, per seed, antal vrak och sparade platser och om det finns rekordtider.
+- [x] `persist.py` med `WorldSave` (dataklass och JSON) och `SaveStore.load(seed)` / `save(world)`. Grund 4 ovan.
+- [x] Vrak sparas och läses in.
+- [x] **Favoritplatser:** `L` (eller *SAVE HERE* i pausmenyn; `B` är redan broms) sparar position, kurs och höjd med ett namn ("PLACE 3"). Pausmenyn får valet *PLACES* med en lista, och valet respawnar planet där.
+- [x] På startskärmen visas, per seed, antal vrak och sparade platser. Rekordtider tillkommer i 7c.
 
-**Tester:** att data sparas och läses tillbaka, att ett gammalt filformat kan läsas och att en trasig fil ger en tom sparning i stället för en krasch. **Klart när:** man kan avsluta, starta om med samma seed och se sina vrak och platser.
+**Resultat:**
+- **Sparfil:** `world-<seed>.json` i `pyxel.user_data_dir("pyxel-flight-sim", "Pyxel Flight Sim")`, på Linux `~/.pyxel/pyxel-flight-sim/pyxel_flight_sim/`. Den har ett versionsnummer (`"version": 1`). Fält som saknas i äldre filer får standardvärden och okända fält ignoreras.
+  - Filen skrivs **vid varje ändring** (krasch, sparad eller borttagen plats) och inte vid avslut, eftersom Pyxels `quit()` kan avsluta utan att Pythons exit-hanterare körs.
+  - Skrivningen är atomisk (`.tmp` och sedan `os.replace`).
+  - En fil som inte går att läsa flyttas till `.json.corrupt` och världen startar tom, så ingenting skrivs över.
+  - Om sparningen misslyckas visas *COULD NOT SAVE*.
+- **Platser:**
+  - `L` sparar planets position, eller spökkamerans i spökläget, som *PLACE n* (lediga nummer återanvänds, högst 20 platser) och visar *PLACE n SAVED*.
+  - *PLACES* i pausmenyn listar platserna med avstånd. `ENTER` flyger dit, `DEL`/`X` (gamepad `X`) tar bort och `ESC` går tillbaka. Listan rullar när den blir lång.
+  - Är platsen längre bort än den finaste terrängnivån räcker visas laddningsskärmen tills terrängen där är klar. Planet hamnar på sparad höjd, men aldrig närmare marken än 20 enheter.
+  - Platserna visas som cyan rutor med nummer på kartan.
+- **Startskärm:** *SAVED HERE: 3 WRECKS, 2 PLACES* för vald seed. Uppgiften läses direkt från filen utan att världen laddas.
+- **Tester:** 10 nya (totalt 121): sparning och läsning tillbaka, att ingen temporär fil blir kvar, äldre format, okända fält, tre sorters trasiga filer (flyttas undan, världen blir tom), platsnumrering och tak samt sammanfattningen.
+- **Provkörd i riktigt fönster över två sessioner** med en tillfällig datakatalog: session 1 sparade två platser och kraschade. I session 2 visade startskärmen det sparade, vraket låg kvar, *PLACES* listade platserna, hoppet till PLACE 2 gick via laddningsskärmen och kartan visade både vrak och platser.
 
 #### 7b – Flygfält och landningsbanor *(medel)*
 

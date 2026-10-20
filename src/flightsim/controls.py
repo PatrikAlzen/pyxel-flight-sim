@@ -31,6 +31,8 @@ class Action(Enum):
     ZOOM_IN = auto()
     ZOOM_OUT = auto()
     CAMERA = auto()
+    SAVE_PLACE = auto()
+    DELETE = auto()
     TIME_OF_DAY = auto()
 
 
@@ -50,6 +52,13 @@ BINDINGS: dict[Action, tuple[int, ...]] = {
     Action.ZOOM_IN: (pyxel.KEY_Z, pyxel.GAMEPAD1_BUTTON_RIGHTSHOULDER),
     Action.ZOOM_OUT: (pyxel.KEY_X, pyxel.GAMEPAD1_BUTTON_LEFTSHOULDER),
     Action.CAMERA: (pyxel.KEY_C, pyxel.GAMEPAD1_BUTTON_Y),
+    Action.SAVE_PLACE: (pyxel.KEY_L,),
+    Action.DELETE: (
+        pyxel.KEY_DELETE,
+        pyxel.KEY_BACKSPACE,
+        pyxel.KEY_X,
+        pyxel.GAMEPAD1_BUTTON_X,
+    ),
     Action.TIME_OF_DAY: (pyxel.KEY_T, pyxel.GAMEPAD1_BUTTON_RIGHTSTICK),
 }
 

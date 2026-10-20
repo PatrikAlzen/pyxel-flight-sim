@@ -7,10 +7,12 @@ when the view moves by a whole pixel or the zoom changes.
 """
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import pyxel
 
+from flightsim.persist import Place
 from flightsim.render.framebuffer import screen_array
 from flightsim.render.hud import CAUTION, HUD, TEXT, shadow_text
 from flightsim.terrain.generator import TerrainGenerator
@@ -66,6 +68,13 @@ def draw_wreck_marker(x: float, y: float) -> None:
         pyxel.line(x - 2 + dx, y + 2 + dy, x + 2 + dx, y - 2 + dy, color)
 
 
+def draw_place_marker(x: float, y: float, name: str) -> None:
+    """A saved place: a small square with the place's number beside it."""
+    pyxel.rect(x - 2, y - 2, 5, 5, pyxel.COLOR_BLACK)
+    pyxel.rect(x - 1, y - 1, 3, 3, pyxel.COLOR_CYAN)
+    shadow_text(x + 4, y - 2, name.removeprefix("PLACE "), pyxel.COLOR_CYAN)
+
+
 def draw_map_overlay(
     world_map: WorldMap,
     x: float,
@@ -73,12 +82,16 @@ def draw_map_overlay(
     heading: float,
     step: float,
     wrecks: np.ndarray | None = None,
+    places: Sequence[Place] = (),
 ) -> None:
-    """The in-flight map: terrain, old crash sites, the plane, a scale bar and help."""
+    """The in-flight map: terrain, crash sites, saved places, the plane, a scale
+    bar and help."""
     world_map.draw(x, y, step)
     if wrecks is not None:
         for wx, wy, _ in wrecks:
             draw_wreck_marker(*world_map.to_screen(wx, wy))
+    for place in places:
+        draw_place_marker(*world_map.to_screen(place.x, place.y), place.name)
     px, py = world_map.to_screen(x, y)
     if pyxel.frame_count // 10 % 2 == 0:
         draw_plane_marker(px, py, heading, CAUTION)
