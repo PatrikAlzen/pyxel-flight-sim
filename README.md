@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–4 klara: flygbart plan i en oändlig procedurell 3D-värld, med landning, krasch och respawn. Nästa steg: fas 5, HUD och kontroller.
+> **Status:** fas 0–5 klara: startskärm med seed-val, flygbart plan med HUD och minikarta i en oändlig procedurell 3D-värld, karta, pausmeny och gamepad-stöd. Nästa steg: fas 6, polish (ljud, moln, jaktkamera).
 
 ---
 
@@ -193,17 +193,19 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 
 | Tangent | Gamepad | Funktion |
 |---|---|---|
-| `↑` / `↓` | Vänster spak Y | Tippa nos ned/upp |
-| `←` / `→` | Vänster spak X | Rolla |
-| `W` / `S` | `R1` / `L1` | Öka/minska gas |
-| `A` / `D` | Höger spak X | Sidroder (liten girning) |
-| `C` | `Y` | Byt kameravy |
-| `M` | `X` | Stor karta |
-| `B` | – | Hjulbromsar (på marken) |
-| `R` | `Start` | Respawn |
+| `↑` / `↓` | Vänster spak Y | Tippa nos ned/upp (menyer: flytta markör) |
+| `←` / `→` | Vänster spak X | Rolla (startskärm: byt seed) |
+| `W` / `S` | `R1` / `L1` eller triggers | Öka/minska gas |
+| `A` / `D` | Höger spak X | Sidroder (på marken: styr) |
+| `B` | `B` | Hjulbromsar (på marken) |
+| `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
+| `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, ny värld, avsluta |
+| `Enter` / `Space` | `A` | Bekräfta |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
-| `F1` | – | Debug-överlägg (FPS, chunkar, koordinater) |
-| `Q` / `Esc` | – | Avsluta |
+| `F1` | – | Debug-överlägg (FPS, tiles, koordinater, flygtillstånd) |
+| `Esc` / `Q` på startskärmen | – | Avsluta |
+| `C` | `Y` | Byt kameravy (fas 6) |
 
 ### Ljud
 
@@ -232,7 +234,8 @@ pyxel-flight-sim/
 │       │   ├── voxel.py       # Voxel Space-renderare (NumPy) med himmel och dimma
 │       │   ├── sky.py         # moln (fas 6)
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
-│       │   └── hud.py         # instrument, minikarta
+│       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta
+│       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
 │       │   └── camera.py      # kamerans position och orientering, kameralägen
@@ -245,7 +248,8 @@ pyxel-flight-sim/
     ├── test_voxel.py          # horisont, tipp/roll, skymning, dimma, LOD, ringbuffert
     ├── test_world.py          # fönster som följer kameran, stegvis = nyfyllt, arbetsprocesser
     ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
-    └── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
+    ├── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
+    └── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
 ```
 
 ## Implementationsplan
@@ -338,10 +342,27 @@ Lärdomar:
 - **17 enhetstester** för flygmodellen: stabil planflygning, gas → fart, bankade svängar, att rollen planar ut, energi vid stigning/dykning, stall, tunn luft, svag kontroll i låg fart, landning, inbromsning och ny start, olika kraschtyper och taxning.
 - Provflygning i riktigt fönster med inspelade knapptryckningar (sväng, stigning, dykning in i en sluttning, respawn): stabila 30 FPS.
 
-### Fas 5 – HUD och kontroller
-- [ ] Instrument, kompass, minikarta och stor karta.
-- [ ] Gamepad-stöd.
-- [ ] Startskärm med seed-val och pausmeny.
+### Fas 5 – HUD och kontroller ✅
+- [x] Instrument, kompass, minikarta och stor karta.
+- [x] Gamepad-stöd.
+- [x] Startskärm med seed-val och pausmeny.
+
+**Resultat:**
+- **Spelflöde:** startskärm → laddning → flygning ↔ paus/karta. ESC är inte längre en avsluta-knapp (`quit_key=KEY_NONE`) utan öppnar pausmenyn: *Resume*, *Respawn*, *New world* (tillbaka till startskärmen, världens processer stängs) och *Quit*. Simuleringen står still i paus och på kartan.
+- **Startskärm:** titeltext skalad ×3 med `blt(scale=…)`, och en förhandskarta över den valda seedens värld (1:32 runt startpunkten) som bakgrund. `←/→` byter seed, `R` slumpar.
+- **HUD** ([render/hud.py](src/flightsim/render/hud.py)):
+  - Kompassband med kurs.
+  - Fartband med rött stallområde.
+  - Höjdband med stapel för vertikal fart, VS-värde och radarhöjd (`R`, gul under 40).
+  - Tipp-stege var 10:e grad, streckad under horisonten.
+  - Flygplanssymbol, gasreglage och STALL/PULL UP/LANDED.
+  - Tipp-stegen skjuvas exakt som renderaren, så linjerna följer den riktiga horisonten även i bank.
+  - Instrumenten har solid svart bakgrund. Halvgenomskinlig dither blev för brusig mot ljus himmel.
+- **Minikarta:** 40×40 px, 16 enheter/px. Den följer kursen (nosen uppåt) och har en nordmarkör. Den läses direkt från den grövsta terrängnivån i ringbufferten, så den kostar nästan ingenting.
+- **Stor karta** (`M`): genereras direkt från generatorn, så den visar mer än det som finns i minnet. Zoom 1:4–1:64, blinkande planmarkör, skalstock och nordpil. Att öppna eller zooma kostar en bildruta på ~50 ms, men spelet är pausat då.
+- **Input** ([controls.py](src/flightsim/controls.py)): alla handlingar fungerar med både tangentbord och gamepad. Spakarna har en dödzon på 15 %, och tangentbord och spak läggs ihop och begränsas till [-1, 1]. Bara navigering och zoom repeterar när man håller knappen, så att ESC inte slår av och på pausen. 13 tester med fejkad input.
+- Provkörd i riktigt fönster med inspelade tangenttryckningar genom hela flödet (seed-byte, start, bank, karta, zoom, paus, menynavigering, fortsätt): 30 FPS under flygning.
+- **Inte provat:** en riktig fysisk gamepad. Mappningen är testad mot Pyxels gamepad-konstanter, men axelriktningar och triggers kan skilja mellan kontroller.
 
 ### Fas 6 – Polish
 - [ ] Ljud: motor, vind, varningar, krasch.

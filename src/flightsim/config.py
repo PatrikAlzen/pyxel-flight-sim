@@ -21,7 +21,7 @@ TERRAIN_WORKERS = 2
 COCKPIT_HEIGHT = 1.0  # camera height above the aircraft's reference point
 RESPAWN_DELAY = 3.0  # seconds after a crash
 CRASH_VIEW_DISTANCE = 60.0  # the crash is watched from this far behind
-CRASH_VIEW_HEIGHT = 30.0  # ...and this high above the higher of camera ground and crash site
+CRASH_VIEW_HEIGHT = 30.0  # ...and this high above the ground or crash site
 
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame
