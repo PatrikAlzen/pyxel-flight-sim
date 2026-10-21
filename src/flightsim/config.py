@@ -68,3 +68,6 @@ PHOTO_FLASH = 0.2  # seconds of white after taking a photo
 REPLAY_MIN = 1.0  # seconds recorded before there is anything to replay
 REPLAY_SEEK = 5.0  # seconds per press of left or right
 REPLAY_RELOAD = 2.0  # camera jumps beyond this many times the finest level's reach load
+
+# Fuel.
+REFUEL_MAX_SPEED = 1.0  # the plane must stand (nearly) still to refuel

@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e, 8a och 8b klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget och repriserna är klara, och kvar är bränsle, flygplanstyper, floder, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8c klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna och bränslet är klara, och kvar är flygplanstyper, floder, trafik och utmärkelser.
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), fotoläge, repris, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, fotoläge, repris, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -278,7 +278,8 @@ pyxel-flight-sim/
     ├── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
     ├── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
     ├── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
-    └── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
+    ├── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
+    └── test_fuel.py           # förbrukning, motorstopp, räckvidd, tankning, deadstick, profil
 ```
 
 ## Implementationsplan
@@ -876,7 +877,7 @@ Målet är att kunna se om en landning, en loop eller en krasch från andra vink
   - Tidsloppets ringar visar läget just nu, inte läget vid tiden i reprisen.
   - Fotoläget går inte att starta från en repris.
 
-#### 8c – Bränsle och räckvidd *(liten–medel)*
+#### 8c – Bränsle och räckvidd ✅
 
 Målet är att längre flygningar ska behöva planeras och att flygfälten ska bli viktigare.
 
@@ -887,6 +888,26 @@ Målet är att längre flygningar ska behöva planeras och att flygfälten ska b
 - **Bedömning:** en landning utan motor får ett eget tillägg i betyget, *DEADSTICK*, vilket utmärkelserna (8g) kan använda.
 
 **Tester:** förbrukningen vid olika gas, att tom tank ger noll dragkraft men fortsatt styrning, att tankning bara sker stillastående på en bana, och att räckviddscirkeln stämmer med en simulerad flygning vid marschfart (inom 10 %).
+
+**Resultat:**
+- **Flygmodellen** ([sim/aircraft.py](src/flightsim/sim/aircraft.py)):
+  - `Aircraft.fuel` (0–1) minskar med `full_burn * (0.3 + 0.7 * throttle**1.5)` när `uses_fuel` är på. Det ger 8 minuter på full gas och ~15 minuter vid marschgas 0,5. Motorn går på tomgång även på marken.
+  - Med tom tank ger motorn ingen dragkraft, men rodren fungerar, så planet glider.
+  - `endurance()` ger tid kvar vid nuvarande gas, och `range_estimate()` ger hur långt planet når vid marschgas och den fart den gasen ger på nuvarande höjd.
+  - Respawn och parkering fyller tanken, så tidsloppen startar alltid med full tank.
+- **Tankning:** står planet stilla (under 1 enhet/s) på en bana fylls tanken på 5 s från tomt. Under tiden visas *REFUELLING 61%*, och när tanken är full kommer ett ljud och *TANK FULL*.
+- **Deadstick:** en landning med stoppad motor får *DEADSTICK* i betyget, till exempel *FIELD 657: DEADSTICK BUTTER (…)*.
+- **HUD:** en bränslemätare bredvid gasen med procent och tid kvar. Den blir gul under 15 % (med blinkande *FUEL LOW*) och röd med *OUT OF FUEL - GLIDE* när tanken är tom. Motorljudet tystnar då, och bara vinden hörs.
+- **Kartan:** *FUEL RANGE 49.0K* överst, en ditherad cirkel för räckvidden, och flygfält utanför räckvidden i grått.
+- **Profil** ([persist.py](src/flightsim/persist.py), gemensam grund 4): `Profile` i `profile.json` bredvid världsfilerna, med samma atomiska skrivning och hantering av trasiga filer. Läsning och skrivning är nu gemensam för världar och profil. *FUEL: OFF/ON* i pausmenyn sparas där. Bränsle är av som standard.
+- **Tester:** 9 nya (totalt 222):
+  - Förbrukning: 8 minuter på full gas, tomgång på marken, ~15 minuter vid marschgas och ingen förbrukning när bränsle är av.
+  - Tom tank: att motorn stannar men rodren fungerar och motorljudet tystnar.
+  - Räckvidd: att uppskattningen stämmer inom 10 % med en simulerad flygning tills tanken är tom.
+  - Tankning: påfyllning och full tank vid respawn och parkering.
+  - Deadstick-betyg, och profilen sparad, läst och flyttad åt sidan när filen är trasig.
+- **Provkört i riktigt fönster:** start på bana 657 med 40 % i tanken, tankning till *TANK FULL*, kartan med räckvidd, *FUEL LOW* vid 10 % i luften och *OUT OF FUEL - GLIDE* med svart mätare och stoppad motor. `profile.json` sparades med `"fuel": true`.
+- **Att justera:** med planens siffror blir räckvidden stor, ~90 km på full tank, medan flygfälten ligger ett par km isär. Bränslet spelar därför mest roll på långa utforskningsturer, och räckviddscirkeln hamnar utanför kartan även vid lägsta zoom. En mindre tank (`full_burn`) gör det svårare.
 
 #### 8d – Fler flygplanstyper *(medel)*
 

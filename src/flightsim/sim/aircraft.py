@@ -72,6 +72,13 @@ class AircraftSettings:
     # Once rolling on the ground, only run into terrain steeper than this.
     max_taxi_slope: float = 0.6
 
+    # Fuel, as a share of a full tank. Burn rate at full throttle (a tank lasts
+    # 8 minutes) times idle_burn + (1 - idle_burn) * throttle**1.5.
+    full_burn: float = 1 / 480
+    idle_burn: float = 0.3
+    refuel_time: float = 5.0  # seconds to fill an empty tank
+    cruise_throttle: float = 0.5  # for range estimates; a tank lasts ~15 minutes
+
     # Respawn.
     spawn_height: float = 120.0
     spawn_speed: float = 100.0
@@ -116,6 +123,9 @@ class Aircraft:
     vertical_speed: float = 0.0
     # Sink rate at the last touchdown (positive = descending), for grading landings.
     touchdown_sink: float = 0.0
+    touchdown_engine_out: bool = False  # a deadstick landing
+    fuel: float = 1.0  # share of a full tank
+    uses_fuel: bool = False  # off: the tank never empties
     settings: AircraftSettings = AircraftSettings()
 
     # Orientation: unit vectors along the nose and out of the canopy.
@@ -177,6 +187,33 @@ class Aircraft:
             self.state is FlightState.FLYING and self.speed < self.settings.stall_speed
         )
 
+    @property
+    def engine_running(self) -> bool:
+        return not self.uses_fuel or self.fuel > 0
+
+    def burn_rate(self, throttle: float | None = None) -> float:
+        """Share of a full tank used per second at ``throttle`` (default: current)."""
+        s = self.settings
+        t = self.throttle if throttle is None else throttle
+        return s.full_burn * (s.idle_burn + (1 - s.idle_burn) * t**1.5)
+
+    def endurance(self) -> float:
+        """Seconds until the tank is empty at the current throttle."""
+        return self.fuel / self.burn_rate()
+
+    def range_estimate(self) -> float:
+        """How far the fuel left takes the plane in level flight at cruise
+        throttle and the speed that throttle settles at at this altitude."""
+        s = self.settings
+        t = s.cruise_throttle
+        density = math.exp(-max(self.altitude, 0.0) / s.scale_height)
+        speed = math.sqrt(t * s.max_thrust * density / s.drag)
+        return speed * self.fuel / self.burn_rate(t)
+
+    def refuel(self, dt: float) -> None:
+        """Pump fuel in; the caller checks the plane stands still at an airfield."""
+        self.fuel = min(1.0, self.fuel + dt / self.settings.refuel_time)
+
     def alert(self, agl: float) -> Alert | None:
         """The most urgent cockpit alert at ``agl`` units above the ground."""
         if self.stalling:
@@ -198,6 +235,7 @@ class Aircraft:
         self.state = FlightState.FLYING
         self.crash_reason = ""
         self.state_time = 0.0
+        self.fuel = 1.0
 
     def park(self, x: float, y: float, heading: float, ground: Ground) -> None:
         """Stand still on the ground at (x, y), engine idle, ready to take off."""
@@ -211,6 +249,7 @@ class Aircraft:
         self.state = FlightState.LANDED
         self.crash_reason = ""
         self.state_time = 0.0
+        self.fuel = 1.0
 
     def update(
         self,
@@ -232,6 +271,8 @@ class Aircraft:
         self.throttle = _clamp(
             self.throttle + controls.throttle * s.throttle_rate * dt, 0, 1
         )
+        if self.uses_fuel:
+            self.fuel = max(0.0, self.fuel - self.burn_rate() * dt)
         if on_ground:
             self._steer_on_ground(controls, dt)
         else:
@@ -332,8 +373,9 @@ class Aircraft:
     def _accelerate(self, controls: Controls, dt: float, on_ground: bool) -> None:
         s = self.settings
         density = math.exp(-max(self.altitude, 0.0) / s.scale_height)
+        thrust = self.throttle if self.engine_running else 0.0
         accel = (
-            self.throttle * s.max_thrust * density
+            thrust * s.max_thrust * density
             - s.drag * self.speed**2
             - s.gravity * self.forward[2]
         )
@@ -358,6 +400,7 @@ class Aircraft:
             self.state = FlightState.LANDED
             self.state_time = 0.0
             self.touchdown_sink = -self.vertical_speed
+            self.touchdown_engine_out = not self.engine_running
             self.forward, _, self.up = euler_to_basis(
                 self.heading, max(self.pitch, 0.0), 0.0
             )

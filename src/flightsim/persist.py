@@ -1,6 +1,8 @@
 """What the player has left behind in each world, saved between sessions.
 
-One small JSON file per seed holds the wrecks and saved places. Files carry a
+One small JSON file per seed holds the wrecks and saved places, and one
+profile file holds what belongs to the player in every world (settings such
+as fuel on or off). Files carry a
 version number; fields missing from older files get their defaults and fields
 this version does not know are ignored, so the format can grow.
 
@@ -81,6 +83,20 @@ class WorldSave:
         )
 
 
+@dataclass
+class Profile:
+    """The player's settings and progress across all worlds."""
+
+    fuel: bool = False  # fuel runs out and must be refilled at airfields
+
+    def to_dict(self) -> dict:
+        return {"version": VERSION, **asdict(self)}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Profile:
+        return cls(fuel=bool(data.get("fuel", False)))
+
+
 class SaveStore:
     """Loads and saves ``WorldSave`` files in one directory."""
 
@@ -91,25 +107,61 @@ class SaveStore:
         return self.directory / f"world-{seed}.json"
 
     def load(self, seed: int) -> WorldSave:
-        path = self.path(seed)
-        try:
-            data = json.loads(path.read_text())
-            return WorldSave.from_dict(data, seed)
-        except FileNotFoundError:
+        data = self._read(self.path(seed))
+        if data is None:
             return WorldSave(seed)
-        except OSError, ValueError, TypeError, KeyError, AttributeError:
-            # Unreadable: keep it for inspection instead of overwriting it.
-            try:
-                path.replace(path.with_suffix(".json.corrupt"))
-            except OSError:
-                pass
+        try:
+            return WorldSave.from_dict(data, seed)
+        except ValueError, TypeError, KeyError, AttributeError:
+            self._set_aside(self.path(seed))
             return WorldSave(seed)
 
     def save(self, world: WorldSave) -> None:
+        self._write(self.path(world.seed), world.to_dict())
+
+    @property
+    def profile_path(self) -> Path:
+        return self.directory / "profile.json"
+
+    def load_profile(self) -> Profile:
+        data = self._read(self.profile_path)
+        if data is None:
+            return Profile()
+        try:
+            return Profile.from_dict(data)
+        except ValueError, TypeError, KeyError, AttributeError:
+            self._set_aside(self.profile_path)
+            return Profile()
+
+    def save_profile(self, profile: Profile) -> None:
+        self._write(self.profile_path, profile.to_dict())
+
+    def _read(self, path: Path) -> dict | None:
+        """The JSON object in ``path``; None if missing or unreadable (and then
+        an unreadable file is moved aside for inspection, not overwritten)."""
+        try:
+            data = json.loads(path.read_text())
+        except FileNotFoundError:
+            return None
+        except OSError, ValueError:
+            self._set_aside(path)
+            return None
+        if not isinstance(data, dict):
+            self._set_aside(path)
+            return None
+        return data
+
+    @staticmethod
+    def _set_aside(path: Path) -> None:
+        try:
+            path.replace(path.with_suffix(".json.corrupt"))
+        except OSError:
+            pass
+
+    def _write(self, path: Path, data: dict) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
-        path = self.path(world.seed)
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(world.to_dict(), indent=1))
+        temporary.write_text(json.dumps(data, indent=1))
         os.replace(temporary, path)
 
     def photo_path(self, seed: int, x: float, y: float, lighting: str) -> Path:

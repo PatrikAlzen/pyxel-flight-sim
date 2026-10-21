@@ -38,6 +38,7 @@ TAPE_MID = TAPE_TOP + TAPE_HEIGHT // 2
 MINIMAP_SIZE = 40
 MINIMAP_SCALE = 16.0  # world units per minimap pixel
 TURBULENCE_WARNING = 0.45  # turbulence (0..1) above which the HUD warns
+FUEL_LOW = 0.15  # share of a full tank below which the HUD warns
 
 
 def shadow_text(x: float, y: float, text: str, color: int) -> None:
@@ -104,6 +105,8 @@ class Hud:
         self.speed_tape(plane)
         self.altitude_tape(plane, agl)
         self.throttle(plane.throttle)
+        if plane.uses_fuel:
+            self.fuel(plane)
         self.wind(plane, wind)
         self.messages(plane, agl)
         if turbulence > TURBULENCE_WARNING and pyxel.frame_count // 8 % 2 == 0:
@@ -281,6 +284,26 @@ class Hud:
         pyxel.rect(x + 1, bottom - 1 - fill, 4, fill, HUD)
         pyxel.rectb(x, bottom - height, 6, height, HUD)
         shadow_text(x + 9, bottom - 6, f"THR {throttle * 100:3.0f}%", HUD)
+
+    def fuel(self, plane: Aircraft) -> None:
+        """Fuel gauge beside the throttle: tank level and time left at this
+        throttle; a warning when low and when the engine has stopped."""
+        x, bottom, height = 54, pyxel.height - 6, 28
+        low = plane.fuel < FUEL_LOW
+        color = WARN if not plane.engine_running else CAUTION if low else HUD
+        pyxel.rect(x, bottom - height, 6, height, pyxel.COLOR_BLACK)
+        fill = round((height - 2) * plane.fuel)
+        pyxel.rect(x + 1, bottom - 1 - fill, 4, fill, color)
+        pyxel.rectb(x, bottom - height, 6, height, color)
+        left = plane.endurance()
+        minutes, seconds = divmod(round(left), 60)
+        shadow_text(x + 9, bottom - 12, f"FUEL {plane.fuel * 100:3.0f}%", color)
+        shadow_text(x + 9, bottom - 6, f"{minutes}:{seconds:02d} LEFT", color)
+        blink = pyxel.frame_count // 8 % 2 == 0
+        if not plane.engine_running:
+            centered_text(pyxel.height // 2 + 30, "OUT OF FUEL - GLIDE", WARN)
+        elif low and blink and plane.state is FlightState.FLYING:
+            centered_text(pyxel.height // 2 + 30, "FUEL LOW", CAUTION)
 
     def wind(self, plane: Aircraft, wind: tuple[float, float]) -> None:
         """Wind under the speed tape: an arrow pointing where it blows, relative

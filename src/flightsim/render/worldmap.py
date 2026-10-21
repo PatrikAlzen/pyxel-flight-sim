@@ -76,12 +76,17 @@ def draw_wreck_marker(x: float, y: float) -> None:
         pyxel.line(x - 2 + dx, y + 2 + dy, x + 2 + dx, y - 2 + dy, color)
 
 
-def draw_runway_marker(world_map: WorldMap, field: Airfield, visited: bool) -> None:
-    """A runway drawn to scale (at least a few pixels long), with its number."""
+def draw_runway_marker(
+    world_map: WorldMap, field: Airfield, visited: bool, reachable: bool = True
+) -> None:
+    """A runway drawn to scale (at least a few pixels long), with its number:
+    green once landed at, grey when the fuel left does not reach it."""
     half = max(field.length / 2, 3 * world_map.step)
     x0, y0 = world_map.to_screen(*field.point(-half))
     x1, y1 = world_map.to_screen(*field.point(half))
     color = pyxel.COLOR_LIME if visited else pyxel.COLOR_WHITE
+    if not reachable:
+        color = pyxel.COLOR_GRAY
     pyxel.line(x0 + 1, y0 + 1, x1 + 1, y1 + 1, pyxel.COLOR_BLACK)
     pyxel.line(x0, y0, x1, y1, color)
     shadow_text(max(x0, x1) + 3, (y0 + y1) / 2 - 2, str(field.number), color)
@@ -108,10 +113,17 @@ def draw_map_overlay(
     villages: Sequence[Village] = (),
     lighthouses: Sequence[Lighthouse] = (),
     discovered: set[int] = frozenset(),
+    fuel_range: float | None = None,
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
-    bar and help."""
+    bar and help. With ``fuel_range``, a circle shows how far the fuel reaches
+    and airfields beyond it are grey."""
     world_map.draw(x, y, step)
+    if fuel_range is not None:
+        px, py = world_map.to_screen(x, y)
+        pyxel.dither(0.5)
+        pyxel.circb(px, py, fuel_range / step, CAUTION)
+        pyxel.dither(1.0)
     for village in villages:
         vx, vy = world_map.to_screen(village.x, village.y)
         pyxel.rect(vx - 1, vy - 1, 3, 3, pyxel.COLOR_ORANGE)
@@ -123,7 +135,10 @@ def draw_map_overlay(
         if light.number in discovered:
             shadow_text(lx + 4, ly - 3, light.name, pyxel.COLOR_YELLOW)
     for field in airfields:
-        draw_runway_marker(world_map, field, field.number in visited)
+        reachable = fuel_range is None or math.hypot(field.x - x, field.y - y) <= (
+            fuel_range
+        )
+        draw_runway_marker(world_map, field, field.number in visited, reachable)
     if wrecks is not None:
         for wx, wy, _ in wrecks:
             draw_wreck_marker(*world_map.to_screen(wx, wy))
@@ -140,6 +155,8 @@ def draw_map_overlay(
     w, h = pyxel.width, pyxel.height
     pyxel.rect(0, 0, w, 9, pyxel.COLOR_BLACK)
     pyxel.text(2, 2, f"MAP  1:{step:g}   X {x:.0f}  Y {y:.0f}", TEXT)
+    if fuel_range is not None:
+        shadow_text(2, 12, f"FUEL RANGE {fuel_range / 1000:.1f}K", CAUTION)
     pyxel.text(w - 4 * 24 - 2, 2, "Z/X ZOOM   M/ESC CLOSE", HUD)
 
     # Scale bar: a round number of world units close to 40 pixels.

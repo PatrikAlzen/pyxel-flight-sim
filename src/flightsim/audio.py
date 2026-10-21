@@ -58,7 +58,11 @@ class SoundState:
         level = min(RAIN_LEVELS - 1, round(rain * (RAIN_LEVELS - 1)))
         if plane.state is FlightState.CRASHED:
             return SoundState(None, 0, None, level)
-        engine = round(plane.throttle * (ENGINE_LEVELS - 1))
+        engine = (
+            round(plane.throttle * (ENGINE_LEVELS - 1))
+            if plane.engine_running
+            else None  # out of fuel: only the wind is left
+        )
         # Wind starts at taxi speeds and is loudest near top speed.
         wind = max(0, min(WIND_LEVELS - 1, int((plane.speed - 20) / 30)))
         return SoundState(engine, wind, plane.alert(agl), level)
@@ -85,6 +89,7 @@ class Audio:
         self.confirm = make_sound("c3g3", "p", "4", "nf", 6)
         self.ring = make_sound("e3g3c4", "p", "5", "nnf", 5)
         self.finish = make_sound("c3e3g3c4rc4", "p", "6", "nnnnnf", 8)
+        self.full = make_sound("g3c4e4", "p", "5", "nnf", 6)
         self.playing = SILENT
         self.last_state: FlightState | None = None
 
@@ -141,6 +146,9 @@ class Audio:
 
     def ring_passed(self) -> None:
         pyxel.play(CH_EFFECT, self.ring)
+
+    def tank_full(self) -> None:
+        pyxel.play(CH_EFFECT, self.full)
 
     def race_finished(self) -> None:
         pyxel.play(CH_EFFECT, self.finish)

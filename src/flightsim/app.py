@@ -33,7 +33,7 @@ import pyxel
 from flightsim import config
 from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
-from flightsim.persist import Place, SaveStore, WorldSave
+from flightsim.persist import Place, Profile, SaveStore, WorldSave
 from flightsim.render import palette
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
@@ -192,6 +192,8 @@ class App:
         self.places_menu = False
         self.store: SaveStore | None = None  # needs Pyxel, so set after init
         self.saved: WorldSave | None = None
+        self.profile = Profile()  # loaded with the store
+        self.refuelling = False
         self.title_summary: tuple[int, tuple[int, int]] | None = None  # (seed, counts)
         # Where loading drops the plane: x, y, heading, altitude (None = default).
         self.spawn: tuple[float, float, float, float | None] = (0.0, 0.0, 0.0, None)
@@ -281,6 +283,7 @@ class App:
         ]
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
+        self.profile = self.store.load_profile()
         pyxel.run(self.update, self.draw)
 
     # --- update -----------------------------------------------------------
@@ -339,6 +342,7 @@ class App:
         self.world_map = WorldMap(self.world.generator)
         sea_level = self.world.generator.settings.sea_level
         self.aircraft = Aircraft(settings=AircraftSettings(sea_level=sea_level))
+        self.aircraft.uses_fuel = self.profile.fuel
         self.camera = Camera()
         self.chase.reset()
         self.clouds = CloudLayer(self.seed)
@@ -517,6 +521,8 @@ class App:
                 self.mode = Mode.FLYING
             case item if item.startswith("WEATHER"):
                 self.cycle_weather()
+            case item if item.startswith("FUEL"):
+                self.toggle_fuel()
             case "PHOTO MODE":
                 self.enter_photo()
             case "REPLAY":
@@ -541,6 +547,7 @@ class App:
             "PLACES",
             *trial,
             weather,
+            f"FUEL: {'ON' if self.profile.fuel else 'OFF'}",
             "PHOTO MODE",
             "REPLAY",
             "NEW WORLD",
@@ -1073,6 +1080,7 @@ class App:
         plane.update(flight_controls(), DT, self.world.height_at, self.wind, bump)
         if was_flying and plane.state is FlightState.LANDED:
             self.touched_down()
+        self.refuel()
         if plane.state is not FlightState.CRASHED:
             self.check_object_collision()
         if self.race and plane.state is not FlightState.CRASHED:
@@ -1118,13 +1126,47 @@ class App:
                 self.persist()
                 self.show_toast(f"DISCOVERED {light.name}")
 
+    def toggle_fuel(self) -> None:
+        """Pause menu: fuel on (it runs out) or off (it never does)."""
+        self.profile.fuel = not self.profile.fuel
+        self.aircraft.uses_fuel = self.profile.fuel
+        self.aircraft.fuel = 1.0
+        try:
+            self.store.save_profile(self.profile)
+        except OSError:
+            self.show_toast("COULD NOT SAVE")
+
+    def refuel(self) -> None:
+        """Fill the tank while standing still on a runway."""
+        plane = self.aircraft
+        standing = (
+            plane.uses_fuel
+            and plane.state is FlightState.LANDED
+            and plane.speed < config.REFUEL_MAX_SPEED
+            and plane.fuel < 1.0
+            and self.world.generator.airfields.runway_at(plane.x, plane.y) is not None
+        )
+        if not standing:
+            self.refuelling = False
+            return
+        self.refuelling = True
+        plane.refuel(DT)
+        if plane.fuel >= 1.0:
+            self.refuelling = False
+            self.audio.tank_full()
+            self.show_toast("TANK FULL")
+        else:
+            self.show_toast(f"REFUELLING {plane.fuel * 100:.0f}%", 0.5)
+
     def touched_down(self) -> None:
         """Grade a landing if it was on a runway, and remember the airfield."""
         plane = self.aircraft
         field = self.world.generator.airfields.runway_at(plane.x, plane.y)
         if field is None:
             return
-        report = landing_report(field, plane.x, plane.y, plane.touchdown_sink)
+        report = landing_report(
+            field, plane.x, plane.y, plane.touchdown_sink, plane.touchdown_engine_out
+        )
         if field.number not in self.saved.visited:
             self.saved.visited.append(field.number)
             self.persist()
@@ -1226,6 +1268,7 @@ class App:
                     self.race.course.rings[self.race.next_ring :] if self.race else (),
                     *self.map_settlements(),
                     set(self.saved.landmarks),
+                    plane.range_estimate() if plane.uses_fuel else None,
                 )
             case Mode.PHOTO:
                 self.draw_photo()
