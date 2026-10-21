@@ -90,6 +90,7 @@ class Audio:
         self.ring = make_sound("e3g3c4", "p", "5", "nnf", 5)
         self.finish = make_sound("c3e3g3c4rc4", "p", "6", "nnnnnf", 8)
         self.full = make_sound("g3c4e4", "p", "5", "nnf", 6)
+        self.fanfare = make_sound("c3e3g3c4e4g4", "s", "566677", "nnnnnf", 7)
         self.playing = SILENT
         self.last_state: FlightState | None = None
 
@@ -154,6 +155,9 @@ class Audio:
 
     def ring_passed(self) -> None:
         pyxel.play(CH_EFFECT, self.ring)
+
+    def achievement(self) -> None:
+        pyxel.play(CH_EFFECT, self.fanfare)
 
     def tank_full(self) -> None:
         pyxel.play(CH_EFFECT, self.full)

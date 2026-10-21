@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8g klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna, floderna, broarna och trafiken är klara, och kvar är utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8h klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik och utmärkelser.
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, flygplan (byts stillastående på en bana), trafik av/på, fotoläge, repris, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, flygplan (byts stillastående på en bana), trafik av/på, fotoläge, repris, utmärkelser, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Välj rad: start (i luften eller på närmaste bana), flygplan eller seed |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -266,6 +266,7 @@ pyxel-flight-sim/
 │       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
 │       │   ├── planes.py      # flygplanstyper: TRAINER, STUNT, CARGO, SEAPLANE
 │       │   ├── traffic.py     # trafik mellan flygfälten: rutter, tidtabell, kollision
+│       │   ├── achievements.py # utmärkelser: lista, detektorer, räknare i profilen
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
@@ -288,6 +289,7 @@ pyxel-flight-sim/
     ├── test_rivers.py         # långa floder med vatten, bara nedåt, slut i fjällen, kostnad, vrak
     ├── test_bridges.py        # placering, fri höjd, kollision, passage, klippning, fart
     ├── test_traffic.py        # rutter bana till bana, frigång, lutning, tidtabell, kollision
+    ├── test_achievements.py   # detektorer med syntetiska flygbanor, händelser, räknare
     └── conftest.py            # gemensamt headless Pyxel-fönster för tester som ritar
 ```
 
@@ -1134,7 +1136,7 @@ Målet är att världen ska kännas befolkad även i luften.
   - Ingen *RUNWAY OCCUPIED* (valfritt i planen). Trafikplan på banan är inte heller hinder.
   - Trafiken syns inte på stora kartan.
 
-#### 8h – Utmärkelser *(medel, gör sist)*
+#### 8h – Utmärkelser ✅
 
 Målet är att ge små mål som får spelaren att prova allt det andra.
 
@@ -1153,6 +1155,36 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
 - **Visning:** en toast med eget ljud när en utmärkelse nås, och en lista i pausmenyn (*ACHIEVEMENTS*). Där visas de uppnådda och de som återstår, med beskrivning. Dolda utmärkelser visas som *???* tills de nås.
 
 **Tester:** varje detektor med syntetiska flygbanor, både sådana som ska räknas och sådana som nästan ska räknas (en loop med för stor bank, en låg passage som är för kort), att räknare överlever omstart via profilen, och att en utmärkelse bara ges en gång. **Risk:** detektorer som ger fel eller missar och känns orättvisa. Därför testas gränsfallen och tröskelvärdena ligger i konstanter.
+
+**Resultat:**
+- **26 utmärkelser** ([sim/achievements.py](src/flightsim/sim/achievements.py)) i sju grupper:
+  - Utforskning: första start, landa på 5/10/25 olika fält, 5 fyrar, 100 km i en värld.
+  - Landningar: *BUTTER*, *DEADSTICK*, *CROSSWIND* (över 12 tvärs banan) och *SPLASHDOWN*.
+  - Konstflyg: loop, låg loop, 10 s ryggflygning, roll på 6 s och låg passage.
+  - Väder: 3 s i ett moln, en minut i storm.
+  - Tidslopp: avslutat, slagit eget rekord, under 60 s.
+  - Floder, broar, trafik och foton: flodfärd 5 km under 50, under en bro, under 5 olika broar, nära möte, 10 foton.
+  - Den dolda *HARD LESSONS*: flyg in i en fyr.
+
+  *ALL THE BRIDGES ON ONE RIVER* blev *BRIDGE TROLL* (5 olika broar), eftersom en flod inte har någon egen identitet i terrängen.
+- **Tre källor:**
+  - Detektorer får ett `Sample` varje bildruta (läge, framåt- och uppvektor, fart, höjd över marken, i moln, storm, över flod) och är ren logik.
+    - Loopen summerar nosens vridning kring vingarna inom 20 s, medan vingspetsarna håller sig inom ~30° från horisontalplanet. En brant sväng räknas alltså inte, men ryggläget högst upp gör det.
+    - Rollen summerar kabinens vridning kring nosen inom 6 s.
+    - Sträckor nollställs vid hopp på över 50 enheter (respawn).
+  - Händelseloggen ger landningar, krascher, broar och nära möten.
+  - Spelet rapporterar besökta fält (med sidvinden vid sättningen), fyrar, broar, foton och avslutade tidslopp.
+- **Sparas i profilen:** `earned` (datum och seed) och `progress`. Listorna är nycklade `seed:nummer`, så fält 3 i två världar är två fält. Sträckan räknas per seed. Allt sparas när en utmärkelse nås, vid paus, när världen stängs och var 20:e sekund.
+- **Visning:** en banderoll *ACHIEVEMENT: LOOP THE LOOP* i 3 s med en egen fanfar. Flera nya visas efter varandra. Pausmenyn har *ACHIEVEMENTS 2/26*, en lista där uppnådda är gula med stjärna och övriga grå, dolda visas som *???*. Den valda visar sin beskrivning och sitt datum.
+- **Tester:** 20 nya (totalt 281):
+  - Loop: att den känns igen och att en låg loop också gör det, att brant bankade eller för långsamma cirklar inte räknas, och att låg flygning före en hög loop inte gör den låg.
+  - Andra detektorer: roll inom 6 s men inte 8 s, ryggflygning 10 s men inte 9,5 s, och låg passage som är för kort, för långsam eller för hög.
+  - Moln, storm och flodfärd (för högt räknas inte), samt att en respawn inte räknas som flugen sträcka.
+  - Första start, att varje utmärkelse bara ges en gång, alla händelser, och notiserna från spelet.
+  - Att framsteg bärs över mellan sessioner och världar.
+- **Provkört i riktigt fönster:** start från bana gav *FIRST FLIGHT*, och en loop med spaken gav *LOOP THE LOOP*. Listan i pausmenyn visade 2/26 med datum.
+  - Första körningen gav också *LOW LOOP* för en loop ~270 över marken: den lägsta höjden räknades över hela fönstret, inklusive den låga stigningen efter starten, och respawnen rakt uppåt räknades inte som ett hopp. Nu räknas bara bildrutor där nosen vrids, och hopp mäts i 3D.
+- **Inte gjort:** *BEAT RECORD* ges bara när det redan fanns ett rekord för fältet och typen.
 
 ---
 

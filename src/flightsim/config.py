@@ -76,5 +76,11 @@ BRIDGE_SEARCH = 200.0  # bridges this close are checked for collisions and passe
 MIDAIR_DISTANCE = 0.7  # of the two planes' half-spans added: a collision
 NEAR_MISS_DISTANCE = 30.0  # closer than this without colliding: a near miss
 
+# Achievements.
+AWARD_SECONDS = 3.0  # each new achievement is announced this long
+RIVER_CHECK_FRAMES = 10  # how often the river under the plane is looked up
+RIVER_VALLEY = 0.5  # valley depth (0..1) that counts as over a river
+PROGRESS_SAVE_FRAMES = 600  # progress (distances, counts) is saved this often
+
 # Fuel.
 REFUEL_MAX_SPEED = 1.0  # the plane must stand (nearly) still to refuel

@@ -105,6 +105,10 @@ class Profile:
     fuel: bool = False  # fuel runs out and must be refilled at airfields
     aircraft: str = "TRAINER"  # name of the aircraft type flown
     traffic: bool = True  # other aircraft flying between airfields
+    # Achievements earned ({key: {"date": ..., "seed": ...}}) and the counts and
+    # lists on the way to them (see sim/achievements.py).
+    earned: dict[str, dict] = field(default_factory=dict)
+    progress: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"version": VERSION, **asdict(self)}
@@ -115,6 +119,8 @@ class Profile:
             fuel=bool(data.get("fuel", False)),
             aircraft=str(data.get("aircraft", "TRAINER")),
             traffic=bool(data.get("traffic", True)),
+            earned={str(k): dict(v) for k, v in data.get("earned", {}).items()},
+            progress=dict(data.get("progress", {})),
         )
 
 

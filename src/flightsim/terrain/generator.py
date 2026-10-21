@@ -122,6 +122,10 @@ class TerrainGenerator:
         """Terrain height before airfields level the ground."""
         return self._natural(x, y)[0]
 
+    def river_valley(self, x: float, y: float) -> float:
+        """How deep in a river valley (x, y) is: 0 outside, 1 over the river."""
+        return float(self._natural(np.array([x]), np.array([y]))[1][0])
+
     def _natural(
         self, x: np.ndarray, y: np.ndarray, lattice: float = RIVER_LATTICE
     ) -> tuple[np.ndarray, np.ndarray]:

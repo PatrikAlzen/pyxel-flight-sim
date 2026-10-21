@@ -79,6 +79,7 @@ from flightsim.render.worldmap import (
     draw_map_overlay,
     draw_plane_marker,
 )
+from flightsim.sim.achievements import ACHIEVEMENTS, BY_KEY, Sample, Tracker
 from flightsim.sim.aircraft import Aircraft, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
@@ -116,6 +117,7 @@ TITLE_MAP_STEP = 32
 PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
 TOAST_SECONDS = 2.0
 RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
+ACHIEVEMENT_ROWS = 9  # shown at once in the pause menu's list
 TITLE_ROWS = ("START", "AIRCRAFT", "SEED")  # top to bottom on the title screen
 REPLAY_VIEWS = ("CHASE", "COCKPIT", "TOWER", "FREE")  # C cycles through them
 
@@ -231,6 +233,12 @@ class App:
         self.events = EventLog()
         self.recorder = Recorder()
         self.events.subscribe(self.recorder.mark)
+        self.events.subscribe(self.on_game_event)
+        self.tracker: Tracker | None = None  # achievements, per world
+        self.awards: list[str] = []  # achievement names still to announce
+        self.award_until = 0.0
+        self.over_river = False  # updated every few frames
+        self.achievements_menu = False
         self.playback: Playback | None = None
         self.traffic: Traffic | None = None
         self.flights: list[Flight] = []  # other aircraft near the camera now
@@ -383,6 +391,7 @@ class App:
         self.particles.clear()
         self.wrecks.clear()
         self.recorder.clear()
+        self.tracker = Tracker(self.profile.earned, self.profile.progress, self.seed)
         self.traffic = Traffic(self.seed, self.world.generator, len(TYPES))
         self.flights = []
         self.near_misses.clear()
@@ -440,6 +449,8 @@ class App:
         self.mode = Mode.LOADING
 
     def close_world(self) -> None:
+        if self.tracker is not None and self.tracker.dirty:
+            self.save_profile()
         if self.world:
             self.world.close()
         self.world = self.world_map = None
@@ -478,6 +489,8 @@ class App:
 
     def update_flying(self) -> None:
         if pressed(Action.PAUSE):
+            if self.tracker.dirty:
+                self.save_profile()
             self.menu_index = 0
             self.places_menu = False
             self.mode = Mode.PAUSED
@@ -518,6 +531,7 @@ class App:
             self.move_ghost()
         else:
             self.fly()
+            self.watch_flight()
             self.recorder.record(self.aircraft, DT)
             plane = self.aircraft
             agl = plane.altitude - self.world.height_at(plane.x, plane.y)
@@ -528,6 +542,9 @@ class App:
     def update_paused(self) -> None:
         if self.places_menu:
             self.update_places_menu()
+            return
+        if self.achievements_menu:
+            self.update_achievements_menu()
             return
         if pressed(Action.PAUSE) or pressed(Action.BACK):
             self.mode = Mode.FLYING
@@ -569,6 +586,9 @@ class App:
                 self.change_aircraft()
             case "PHOTO MODE":
                 self.enter_photo()
+            case item if item.startswith("ACHIEVEMENTS"):
+                self.achievements_menu = True
+                self.menu_index = 0
             case "REPLAY":
                 self.start_replay()
             case "NEW WORLD":
@@ -596,6 +616,7 @@ class App:
             f"TRAFFIC: {'ON' if self.profile.traffic else 'OFF'}",
             "PHOTO MODE",
             "REPLAY",
+            f"ACHIEVEMENTS {len(self.profile.earned)}/{len(ACHIEVEMENTS)}",
             "NEW WORLD",
             "QUIT",
         ]
@@ -1009,6 +1030,7 @@ class App:
             return
         self.photo_flash_until = time.perf_counter() + config.PHOTO_FLASH
         self.show_toast(f"PHOTO SAVED: {path.name}.png", 3.0)
+        self.award(self.tracker.took_photo())
 
     def show_toast(self, text: str, seconds: float = TOAST_SECONDS) -> None:
         self.toast = text
@@ -1076,6 +1098,8 @@ class App:
     def finish_race(self) -> None:
         race = self.race
         self.audio.race_finished()
+        best = race.record[-1] if race.record else None
+        self.award(self.tracker.finished_trial(race.time, best))
         result = f"FINISHED {format_time(race.time)}"
         if race.record is not None:
             result += f" ({race.time - race.record[-1]:+.1f})"
@@ -1185,6 +1209,7 @@ class App:
             self.audio.ring_passed()
             self.show_toast(f"UNDER {bridge.name}!")
             self.events.emit(EventKind.BRIDGE, end, f"UNDER {bridge.name}!")
+            self.award(self.tracker.flew_under_bridge(bridge.number))
             if bridge.number not in self.saved.bridges:
                 self.saved.bridges.append(bridge.number)
                 self.persist()
@@ -1207,6 +1232,7 @@ class App:
                 self.saved.landmarks.append(light.number)
                 self.persist()
                 self.show_toast(f"DISCOVERED {light.name}")
+                self.award(self.tracker.discovered_lighthouse(light.number))
 
     @property
     def plane_type(self) -> AircraftType:
@@ -1238,6 +1264,107 @@ class App:
 
     def on_runway(self, x: float, y: float) -> bool:
         return self.world.generator.airfields.runway_at(x, y) is not None
+
+    # --- achievements -------------------------------------------------------
+
+    def watch_flight(self) -> None:
+        """Show the achievement detectors this frame of flight."""
+        plane = self.aircraft
+        if pyxel.frame_count % config.RIVER_CHECK_FRAMES == 0:
+            valley = self.world.generator.river_valley(plane.x, plane.y)
+            self.over_river = valley > config.RIVER_VALLEY
+        ground = max(
+            self.world.height_at(plane.x, plane.y),
+            self.world.generator.settings.sea_level,
+        )
+        sample = Sample(
+            position=np.array([plane.x, plane.y, plane.altitude]),
+            forward=plane.forward.copy(),
+            up=plane.up.copy(),
+            speed=plane.speed,
+            agl=plane.altitude - plane.settings.gear_height - ground,
+            flying=plane.state is FlightState.FLYING,
+            in_cloud=self.clouds.inside(plane.x, plane.y, plane.altitude),
+            storm=self.weather.current.name == "STORM",
+            over_river=self.over_river,
+        )
+        self.award(self.tracker.update(sample, DT))
+        if self.tracker.dirty and pyxel.frame_count % config.PROGRESS_SAVE_FRAMES == 0:
+            self.save_profile()
+
+    def on_game_event(self, event) -> None:
+        if self.tracker is not None:
+            self.award(self.tracker.on_event(event))
+
+    def award(self, keys: list[str]) -> None:
+        """Announce newly earned achievements and save them."""
+        if not keys:
+            return
+        if not self.awards:
+            self.award_until = time.perf_counter() + config.AWARD_SECONDS
+        self.awards += [BY_KEY[key].name for key in keys]
+        self.audio.achievement()
+        self.save_profile()
+
+    def draw_award(self) -> None:
+        """The current achievement in a banner, one after another."""
+        if not self.awards:
+            return
+        now = time.perf_counter()
+        if now > self.award_until:
+            self.awards.pop(0)
+            self.award_until = now + config.AWARD_SECONDS
+            if not self.awards:
+                return
+        shaded_rect(0, 40, W, 11)
+        centered_text(42, f"ACHIEVEMENT: {self.awards[0]}", pyxel.COLOR_YELLOW)
+
+    def update_achievements_menu(self) -> None:
+        if pressed(Action.BACK) or pressed(Action.PAUSE):
+            self.achievements_menu = False
+            self.menu_index = next(
+                i
+                for i, item in enumerate(self.pause_items())
+                if item.startswith("ACHIEVE")
+            )
+            return
+        if pressed(Action.UP):
+            self.menu_index = (self.menu_index - 1) % len(ACHIEVEMENTS)
+            self.audio.menu_move()
+        if pressed(Action.DOWN):
+            self.menu_index = (self.menu_index + 1) % len(ACHIEVEMENTS)
+            self.audio.menu_move()
+
+    def draw_achievements_menu(self) -> None:
+        """All achievements: earned ones bright, the rest grey, hidden ones ???."""
+        rows = ACHIEVEMENT_ROWS
+        first = max(0, min(self.menu_index - rows // 2, len(ACHIEVEMENTS) - rows))
+        width, height = 200, 46 + rows * 8
+        x, y = (W - width) // 2, (H - height) // 2
+        shaded_rect(0, 0, W, H)
+        pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
+        pyxel.rectb(x, y, width, height, HUD)
+        earned = self.profile.earned
+        centered_text(
+            y + 4, f"ACHIEVEMENTS {len(earned)}/{len(ACHIEVEMENTS)}", pyxel.COLOR_YELLOW
+        )
+        for row, item in enumerate(ACHIEVEMENTS[first : first + rows]):
+            i = first + row
+            got = item.key in earned
+            name = item.name if got or not item.hidden else "???"
+            mark = "*" if got else " "
+            color = pyxel.COLOR_YELLOW if got else pyxel.COLOR_GRAY
+            if i == self.menu_index:
+                color = TEXT
+                name = f"> {name}"
+            pyxel.text(x + 8, y + 14 + row * 8, f"{mark} {name}", color)
+        item = ACHIEVEMENTS[self.menu_index]
+        got = item.key in earned
+        about = "???" if item.hidden and not got else item.description.upper()
+        if got:
+            about += f"  ({earned[item.key].get('date', '')})"
+        centered_text(y + height - 22, about, TEXT)
+        centered_text(y + height - 10, "UP/DOWN SCROLL   ESC BACK", HUD)
 
     # --- traffic ------------------------------------------------------------
 
@@ -1371,6 +1498,9 @@ class App:
             report = "NEW " + report
         self.show_toast(report)
         self.events.emit(EventKind.LANDING, (plane.x, plane.y, plane.altitude), report)
+        ax, ay = field.across
+        crosswind = abs(self.wind[0] * ax + self.wind[1] * ay)
+        self.award(self.tracker.landed_at(field.number, crosswind))
 
     def crashed(self) -> None:
         """The moment of impact: leave a wreck on the ground and blow up."""
@@ -1479,6 +1609,8 @@ class App:
                 if self.mode is Mode.PAUSED:
                     if self.places_menu:
                         self.draw_places_menu()
+                    elif self.achievements_menu:
+                        self.draw_achievements_menu()
                     else:
                         self.draw_pause_menu()
         if self.toast and time.perf_counter() < self.toast_until:
@@ -1489,6 +1621,8 @@ class App:
             else:
                 y = 52 if racing else 32
             centered_text(y, self.toast, pyxel.COLOR_YELLOW)
+        if self.mode in (Mode.FLYING, Mode.PAUSED, Mode.PHOTO):
+            self.draw_award()
         if self.show_debug and self.world:
             self.draw_debug()
 
