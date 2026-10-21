@@ -35,6 +35,7 @@ from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
 from flightsim.persist import Place, Profile, SaveStore, WorldSave
 from flightsim.render import palette
+from flightsim.render.bridges import draw_bridges
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
     WRECK_FULL_SIZE_DISTANCE,
@@ -101,6 +102,7 @@ from flightsim.terrain.airfields import (
     landing_report,
     water_landing_report,
 )
+from flightsim.terrain.bridges import Bridge
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.objects import HEIGHT, Kind, Objects, hit
 from flightsim.terrain.settlements import Lighthouse
@@ -1124,6 +1126,10 @@ class App:
         self.refuel()
         if plane.state is not FlightState.CRASHED:
             self.check_object_collision()
+        if plane.state is not FlightState.CRASHED:
+            self.check_bridge_passes(
+                start, np.array([plane.x, plane.y, plane.altitude])
+            )
         if self.race and plane.state is not FlightState.CRASHED:
             end = np.array([plane.x, plane.y, plane.altitude])
             passed = self.race.update(DT, start, end, moving=plane.speed > 2.0)
@@ -1147,6 +1153,25 @@ class App:
                 plane.crash("HIT A HOUSE")
             case Kind.LIGHTHOUSE:
                 plane.crash("HIT THE LIGHTHOUSE")
+        for bridge in self.bridges_near(plane.x, plane.y, config.BRIDGE_SEARCH):
+            if bridge.hit(plane.x, plane.y, plane.altitude):
+                plane.crash("HIT A BRIDGE")
+                return
+
+    def bridges_near(self, x: float, y: float, radius: float) -> list[Bridge]:
+        return self.world.generator.bridges.near(x, y, radius)
+
+    def check_bridge_passes(self, start: np.ndarray, end: np.ndarray) -> None:
+        """Flying under a bridge earns a cheer, and discovers it the first time."""
+        for bridge in self.bridges_near(end[0], end[1], config.BRIDGE_SEARCH):
+            if not bridge.passed_under(start, end):
+                continue
+            self.audio.ring_passed()
+            self.show_toast(f"UNDER {bridge.name}!")
+            self.events.emit(EventKind.BRIDGE, end, f"UNDER {bridge.name}!")
+            if bridge.number not in self.saved.bridges:
+                self.saved.bridges.append(bridge.number)
+                self.persist()
 
     def lighthouses_near(self, radius: float) -> list[Lighthouse]:
         cam = self.camera
@@ -1352,6 +1377,8 @@ class App:
                     *self.map_settlements(),
                     set(self.saved.landmarks),
                     plane.range_estimate() if plane.uses_fuel else None,
+                    self.map_bridges(),
+                    set(self.saved.bridges),
                 )
             case Mode.PHOTO:
                 self.draw_photo()
@@ -1383,7 +1410,16 @@ class App:
         self.render_time.add(time.perf_counter() - start)
         draw_particles(self.particles, self.camera, self.renderer)
         self.draw_airfield_props()
-        self.draw_objects()
+        bridges = self.bridges_near(
+            self.camera.x, self.camera.y, config.BRIDGE_DRAW_DISTANCE
+        )
+        split = self.nearest_bridge_distance(bridges)
+        self.draw_objects(beyond=split)
+        if bridges:
+            draw_bridges(
+                bridges, self.camera, self.renderer, config.BRIDGE_DRAW_DISTANCE
+            )
+            self.draw_objects(within=split)
         nearby, kinds = self.wrecks.near_with_kinds(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
@@ -1514,8 +1550,21 @@ class App:
         )
         pyxel.dither(1.0)
 
-    def draw_objects(self) -> None:
-        """Trees and houses near the camera, and lighthouses further out."""
+    def nearest_bridge_distance(self, bridges: list[Bridge]) -> float:
+        """Horizontal distance from the camera to the nearest point of any deck."""
+        cam = self.camera
+        nearest = math.inf
+        for bridge in bridges:
+            along, across = bridge.local(cam.x, cam.y)
+            along = max(abs(float(along)) - bridge.half_span, 0.0)
+            across = max(abs(float(across)) - bridge.width / 2, 0.0)
+            nearest = min(nearest, math.hypot(along, across))
+        return nearest
+
+    def draw_objects(self, beyond: float = 0.0, within: float = math.inf) -> None:
+        """Trees and houses near the camera, and lighthouses further out: those
+        more than ``beyond`` and at most ``within`` away (horizontally), so
+        objects on both sides of a bridge can be drawn before and after it."""
         cam = self.camera
         reach = min(
             config.OBJECT_DRAW_DISTANCE * self.zoom, self.world.levels[0].safe_radius
@@ -1531,6 +1580,8 @@ class App:
                 np.ones(len(lights), np.float32),
             )
             near = Objects.concat([near, towers])
+        away = np.hypot(near.position[:, 0] - cam.x, near.position[:, 1] - cam.y)
+        near = near.select((away > beyond) & (away <= within))
         base = np.array([0, 3, 7])  # first sprite of each Kind
         self.objects_drawn = draw_billboards(
             self.object_sprites,
@@ -1543,7 +1594,7 @@ class App:
             scales=near.scale,
             limit=config.OBJECT_LIMIT,
         )
-        if palette.LIGHTINGS[self.lighting] is not palette.DAY:
+        if within == math.inf and palette.LIGHTINGS[self.lighting] is not palette.DAY:
             self.draw_lighthouse_lamps(lights)
 
     def draw_lighthouse_lamps(self, lights: list[Lighthouse]) -> None:
@@ -1608,6 +1659,17 @@ class App:
         rx, ry = W / 2 * step, H / 2 * step
         box = (plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry)
         return s.villages(*box), s.lighthouses(*box)
+
+    def map_bridges(self) -> list[Bridge]:
+        """Bridges on the map, at the same zoom levels as villages."""
+        step = ZOOMS[self.map_zoom]
+        if step > config.MAP_SETTLEMENT_ZOOM:
+            return []
+        plane = self.aircraft
+        rx, ry = W / 2 * step, H / 2 * step
+        return self.world.generator.bridges.overlapping(
+            plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
+        )
 
     def map_airfields(self) -> list[Airfield]:
         """Airfields in and around the area the map shows."""

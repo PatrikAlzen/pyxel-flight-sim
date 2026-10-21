@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna och floderna är klara, och kvar är broar, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8f klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna, floderna och broarna är klara, och kvar är trafik och utmärkelser.
 
 ---
 
@@ -243,6 +243,7 @@ pyxel-flight-sim/
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
 │       │   ├── airfields.py   # flygfält: placering, utjämnad mark, banmålning, landningsbetyg
 │       │   ├── settlements.py # byar och fyrar: placering per cell, namn
+│       │   ├── bridges.py     # broar över floderna: placering, kollision, passage under
 │       │   ├── objects.py     # träd, hus och fyrar per tile, hashning, kollision
 │       │   ├── world.py       # LOD-nivåer som ringbuffertar som följer kameran, arbetsprocesser
 │       │   └── shading.py     # lutningsbaserad ljussättning
@@ -255,6 +256,7 @@ pyxel-flight-sim/
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
 │       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta, tidsloppspanel
 │       │   ├── rings.py       # tidsloppets ringar i 3D och pilen mot nästa ring
+│       │   ├── bridges.py     # broar i 3D: lådor klippta mot kameran, dimma, räcken
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
@@ -282,7 +284,9 @@ pyxel-flight-sim/
     ├── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
     ├── test_fuel.py           # förbrukning, motorstopp, räckvidd, tankning, deadstick, profil
     ├── test_planes.py         # typernas karaktär, sjöflygplan på vatten och land, sprites, vrak
-    └── test_rivers.py         # långa floder med vatten, bara nedåt, slut i fjällen, kostnad, vrak
+    ├── test_rivers.py         # långa floder med vatten, bara nedåt, slut i fjällen, kostnad, vrak
+    ├── test_bridges.py        # placering, fri höjd, kollision, passage, klippning, fart
+    └── conftest.py            # gemensamt headless Pyxel-fönster för tester som ritar
 ```
 
 ## Implementationsplan
@@ -1015,7 +1019,7 @@ Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga
   - Inga broar ännu (8f).
   - Inga tidslopp eller utmärkelser längs floder ännu (8h).
 
-#### 8f – Broar över floderna *(medel)*
+#### 8f – Broar över floderna ✅
 
 Målet är att floderna ska få broar som man kan flyga under, som en utmaning och som landmärken att hitta.
 
@@ -1046,6 +1050,41 @@ Målet är att floderna ska få broar som man kan flyga under, som en utmaning o
 - Ritning: att klippningen ger ett däck även när kameran står under bron, och att ritningen av tio synliga broar håller sig under 1 ms.
 
 **Risk:** klippningen och ritordningen när man är mycket nära eller under bron. Det mildras med tester där kameran står under däcket och med en skriptad flygning under en bro i riktigt fönster. Smala broar kan blinka på avstånd, vilket mildras med en minsta skärmstorlek.
+
+**Resultat:**
+- **Placering** ([terrain/bridges.py](src/flightsim/terrain/bridges.py)):
+  - En cell om 1500 × 1500 enheter (90 %) provar punkter i ett jittrat rutnät 12 × 12 och behåller dem med dalfaktor över 0,6, närmast en by först.
+  - `TerrainGenerator.river_crossing` tar sig med tre Newtonsteg till flodens mittlinje och ger riktningen tvärs över. Den bygger på `river_field`, flodbruset med gradient ur samma rutnät som terrängen, som nu är publikt.
+  - Däcket läggs på lägsta höjd (14–25 över vattnet) där båda ändarna når marken och spännvidden blir 30–140 enheter. Det går 3 enheter in i bankarna.
+  - Pelare står var 26:e enhet där marken ligger mer än 4 enheter under däcket, men inte inom 16 enheter från flodens mitt, så passagen är fri.
+  - Broar läggs inte inom 400 enheter från flygfält. De får namn efter närmaste by inom 900 enheter (*NORBERG BRIDGE*), annars ett genererat namn.
+  - På 8 × 8 km kring start blev det 10 broar, 36–96 enheter långa. Placeringen tar ~50 ms per cell och görs en gång per process.
+  - Träd växer inte där bron möter bankarna.
+- **Ritning** ([render/bridges.py](src/flightsim/render/bridges.py)):
+  - Däcket är en rad lådor om ~10 enheter, och pelarna är lådor ned till marken. Räcken med stolpar ritas som linjer.
+  - Alla hörn, synliga sidor, dimnivåer och skymningstester räknas i några få numpy-operationer per bro. Bara sidor som når bakom kameran klipps i Python innan de fylls med `pyxel.tri`. Därför syns däckets undersida även rakt ovanför.
+  - Lådorna ritas längst bort först. Sedda ovanifrån ritas pelarna före däcket.
+  - En låda döljs om terräng eller tätt moln ligger närmare där dess mitt syns. Färgerna kommer från palettens asfalt- och klippramper med dimnivå, så dag, skymning, natt, mulet väder och sikt följer med.
+  - **Ritordning mot objekt:** spelet räknar avståndet till närmaste däck. Träd och hus bortom det ritas före broarna och de närmare efter.
+  - Det tar ~0,45 ms per synlig bro (först 2,4 ms innan ritningen vektoriserades). Broar som blir smalare än 3 pixlar ritas inte, och inte heller broar längre bort än 1500 enheter.
+- **Kollision:** däcket med räcken och varje pelare är solida (*HIT A BRIDGE*) med 1 enhets marginal.
+- **Under bron:** passagen räknas när planets väg mellan två bildrutor korsar däckets linje under däcket och inom spännvidden. Det ger *UNDER NORBERG BRIDGE!* med ringljudet och `EventKind.BRIDGE`, som syns i repriser. Bron sparas som passerad i `WorldSave.bridges`.
+- **Karta:** broar ritas som korta linjer över floden vid zoom 1:16 och närmare. Passerade är gula med namn, och de andra grå.
+- **Tester:** 13 nya (totalt 252):
+  - Placering: att broar hittas, att placeringen inte beror på ordningen och att numren är unika, att varje bro har vatten under sig, fri höjd och spännvidd inom gränserna, ändar på mark och pelare under däcket, och att inga träd står på brofästena.
+  - Kollision och passage: solida delar och fri passage, och passagen fem fall (norrut, snett söderut, över, förbi änden och inte igenom än).
+  - Ritning: däcket syns rakt ovanför, broar döljs bakom terräng och långt bort, och ritningens fart.
+  - Sparning.
+
+  Tester som ritar delar nu ett headless Pyxel-fönster (`tests/conftest.py`), eftersom Pyxel bara kan startas en gång per process.
+- **Provkört i riktigt fönster:** lågt längs floden under NORBERG BRIDGE (16 enheter hög, 87 lång, en pelare).
+  - Från cockpit syntes bron framför med träd i rätt ordning, och sedan undersidan rakt ovanför.
+  - I jaktvy syntes däck, räcken och pelaren med planet framför.
+  - *UNDER NORBERG BRIDGE!* visades och bron sparades. På kartan syntes den gul med namn.
+- **Inte gjort:**
+  - Inga vägar fram till broarna.
+  - Två broar nära samma by kan få samma namn.
+  - Planet i jaktvyn ritas alltid efter broarna, så om bron ligger mellan kameran och planet hamnar planet framför däcket.
 
 #### 8g – Trafik mellan flygfälten *(stor)*
 

@@ -47,6 +47,7 @@ class ObjectSettings:
     snowy_above: float = 95.0  # spruces higher than this carry snow
     # Clear ground around runways, beyond the runway's own length and width.
     runway_clearance: tuple[float, float] = (40.0, 70.0)
+    bridge_clearance: float = 6.0  # beyond a bridge's deck
 
 
 @dataclass
@@ -164,6 +165,16 @@ def _trees(generator, sample, s: ObjectSettings, x0, y0, width, depth) -> Object
         u, v = field.local(px, py)
         keep &= ~(
             (np.abs(u) < field.length / 2 + du) & (np.abs(v) < field.width / 2 + dv)
+        )
+    # Nor where a bridge meets the banks.
+    reach = generator.bridges.settings.span[1]
+    for bridge in generator.bridges.overlapping(
+        x0 - reach, y0 - reach, x0 + width + reach, y0 + depth + reach
+    ):
+        along, across = bridge.local(px, py)
+        keep &= ~(
+            (np.abs(along) < bridge.half_span + s.bridge_clearance)
+            & (np.abs(across) < bridge.width / 2 + s.bridge_clearance)
         )
 
     px, py, gx, gy = px[keep], py[keep], gx[keep], gy[keep]

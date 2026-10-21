@@ -68,5 +68,9 @@ REPLAY_MIN = 1.0  # seconds recorded before there is anything to replay
 REPLAY_SEEK = 5.0  # seconds per press of left or right
 REPLAY_RELOAD = 2.0  # camera jumps beyond this many times the finest level's reach load
 
+# Bridges.
+BRIDGE_DRAW_DISTANCE = 1500.0  # bridges further away are not drawn
+BRIDGE_SEARCH = 200.0  # bridges this close are checked for collisions and passes
+
 # Fuel.
 REFUEL_MAX_SPEED = 1.0  # the plane must stand (nearly) still to refuel

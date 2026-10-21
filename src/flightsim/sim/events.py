@@ -16,6 +16,7 @@ class EventKind(Enum):
     CRASH = "CRASH"
     LANDING = "LANDING"
     RING = "RING"
+    BRIDGE = "BRIDGE"  # flew under one
 
 
 @dataclass(frozen=True)

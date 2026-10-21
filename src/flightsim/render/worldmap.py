@@ -17,6 +17,7 @@ from flightsim.render.framebuffer import screen_array
 from flightsim.render.hud import CAUTION, HUD, TEXT, shadow_text
 from flightsim.sim.race import Ring
 from flightsim.terrain.airfields import Airfield
+from flightsim.terrain.bridges import Bridge
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.settlements import Lighthouse, Village
 
@@ -92,6 +93,22 @@ def draw_runway_marker(
     shadow_text(max(x0, x1) + 3, (y0 + y1) / 2 - 2, str(field.number), color)
 
 
+def draw_bridge_marker(world_map: WorldMap, bridge: Bridge, flown_under: bool) -> None:
+    """A bridge across its river, at least a few pixels long; named once flown under."""
+    half = max(bridge.half_span, 2 * world_map.step)
+    x0, y0 = world_map.to_screen(
+        bridge.x - bridge.ax * half, bridge.y - bridge.ay * half
+    )
+    x1, y1 = world_map.to_screen(
+        bridge.x + bridge.ax * half, bridge.y + bridge.ay * half
+    )
+    color = pyxel.COLOR_YELLOW if flown_under else pyxel.COLOR_GRAY
+    pyxel.line(x0 + 1, y0 + 1, x1 + 1, y1 + 1, pyxel.COLOR_BLACK)
+    pyxel.line(x0, y0, x1, y1, color)
+    if flown_under:
+        shadow_text(max(x0, x1) + 3, (y0 + y1) / 2 - 2, bridge.name, color)
+
+
 def draw_place_marker(x: float, y: float, name: str) -> None:
     """A saved place: a small square with the place's number beside it."""
     pyxel.rect(x - 2, y - 2, 5, 5, pyxel.COLOR_BLACK)
@@ -114,6 +131,8 @@ def draw_map_overlay(
     lighthouses: Sequence[Lighthouse] = (),
     discovered: set[int] = frozenset(),
     fuel_range: float | None = None,
+    bridges: Sequence[Bridge] = (),
+    flown_under: set[int] = frozenset(),
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
     bar and help. With ``fuel_range``, a circle shows how far the fuel reaches
@@ -134,6 +153,8 @@ def draw_map_overlay(
         pyxel.tri(lx, ly - 4, lx - 2, ly + 1, lx + 2, ly + 1, color)
         if light.number in discovered:
             shadow_text(lx + 4, ly - 3, light.name, pyxel.COLOR_YELLOW)
+    for bridge in bridges:
+        draw_bridge_marker(world_map, bridge, bridge.number in flown_under)
     for field in airfields:
         reachable = fuel_range is None or math.hypot(field.x - x, field.y - y) <= (
             fuel_range

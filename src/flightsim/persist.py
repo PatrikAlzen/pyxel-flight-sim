@@ -41,6 +41,7 @@ class WorldSave:
     # {field: {"TRAINER": {"splits": [...], "ghost": [[x, y, z], ...]}}}.
     records: dict[int, dict[str, dict]] = field(default_factory=dict)
     landmarks: list[int] = field(default_factory=list)  # lighthouse numbers discovered
+    bridges: list[int] = field(default_factory=list)  # bridge numbers flown under
 
     def add_place(self, x: float, y: float, altitude: float, heading: float) -> Place:
         """Save a place under the next free number; the oldest go past MAX_PLACES."""
@@ -78,6 +79,7 @@ class WorldSave:
             for number, by_type in data.get("records", {}).items()
         }
         landmarks = [int(n) for n in data.get("landmarks", [])]
+        bridges = [int(n) for n in data.get("bridges", [])]
         return cls(
             seed,
             wrecks=wrecks,
@@ -85,6 +87,7 @@ class WorldSave:
             visited=visited,
             records=records,
             landmarks=landmarks,
+            bridges=bridges,
         )
 
 

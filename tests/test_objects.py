@@ -157,16 +157,13 @@ def test_hits():
     assert hit(Objects.empty(), 0, 0, 0) is None
 
 
-def test_drawing_800_objects_is_fast_enough():
+def test_drawing_800_objects_is_fast_enough(screen):
     """The per-frame budget for objects: 800 sprites drawn through Pyxel."""
-    import pyxel
-
     from flightsim.render.effects import draw_billboards
     from flightsim.render.sprites import BROADLEAF, WORLD_COLORS, make_image
     from flightsim.render.voxel import VoxelRenderer
     from flightsim.sim.camera import Camera
 
-    pyxel.init(256, 144, headless=True)
     renderer = VoxelRenderer(256, 144)
     renderer.pixel_distance[:] = np.inf  # nothing in the way
     sprite = make_image(BROADLEAF, WORLD_COLORS)

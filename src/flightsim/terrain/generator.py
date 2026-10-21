@@ -14,6 +14,7 @@ from flightsim.render.palette import SHADES, biome_color
 from flightsim.terrain import shading
 from flightsim.terrain.airfields import Airfield, Airfields, AirfieldSettings
 from flightsim.terrain.biomes import Biome, classify
+from flightsim.terrain.bridges import Bridges
 from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
 from flightsim.terrain.settlements import Settlements
 
@@ -110,6 +111,7 @@ class TerrainGenerator:
         self.settlements = Settlements(
             seed, self.elevation, self.moisture, self.settings.sea_level, self.airfields
         )
+        self.bridges = Bridges(seed, self)
 
     def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Terrain height at world coordinates, including the sea floor and
@@ -223,7 +225,15 @@ class TerrainGenerator:
     def _river_distance(
         self, x: np.ndarray, y: np.ndarray, cell: float = RIVER_LATTICE
     ) -> np.ndarray:
-        """Approximate world distance from each point to the nearest river line.
+        """Approximate world distance from each point to the nearest river line."""
+        r, drdx, drdy = self.river_field(x, y, cell)
+        return np.abs(r) / np.maximum(np.hypot(drdx, drdy), 1e-9)
+
+    def river_field(
+        self, x: np.ndarray, y: np.ndarray, cell: float = RIVER_LATTICE
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The river noise ``r`` (rivers run where it is 0) and its world
+        gradient at points: the gradient points across the river.
 
         The river noise changes slowly, so it is evaluated on a fixed world
         lattice and interpolated bilinearly, which also gives its gradient from
@@ -265,7 +275,23 @@ class TerrainGenerator:
         r = top + (bottom - top) * fy
         drdx = ((r10 - r00) * (1 - fy) + (r11 - r01) * fy) / cell
         drdy = (bottom - top) / cell
-        return np.abs(r) / np.maximum(np.hypot(drdx, drdy), 1e-9)
+        return r, drdx, drdy
+
+    def river_crossing(self, x: float, y: float) -> tuple[float, float, float, float]:
+        """The point on the river line nearest (x, y), and the unit direction
+        straight across the river there: (cx, cy, ax, ay)."""
+        px, py = float(x), float(y)
+        for _ in range(3):  # Newton steps onto r = 0
+            r, gx, gy = (
+                float(v[0]) for v in self.river_field(np.array([px]), np.array([py]))
+            )
+            g2 = max(gx * gx + gy * gy, 1e-18)
+            px, py = px - r * gx / g2, py - r * gy / g2
+        _, gx, gy = (
+            float(v[0]) for v in self.river_field(np.array([px]), np.array([py]))
+        )
+        norm = max(math.hypot(gx, gy), 1e-12)
+        return px, py, gx / norm, gy / norm
 
     def _river_noise(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """The river noise at world points, in warped continent coordinates."""
