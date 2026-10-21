@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 och 7a–7e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. Kvar: 7f (webb).
+> **Status:** fas 0–6 och 7a–7e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Nästa steg är fas 8: fotoläge, repris, bränsle, flygplanstyper, floder, trafik och utmärkelser.
 
 ---
 
@@ -724,7 +724,10 @@ Målet är att flygningen ska variera och att förhållandena ska kännas.
   - Vädret sparas inte mellan sessioner.
   - Vindstrutens spegling testades inte i fönstret, eftersom den aldrig syntes i bild från startplatsen.
 
-#### 7f – Webbversion *(medel, gör sist)*
+#### 7f – Webbversion *(överhoppad)*
+
+> Den här delfasen hoppas över tills vidare. Planen står kvar ifall en webbversion blir aktuell senare. Delfaserna i fas 8 ska inte göra den svårare än nödvändigt, till exempel genom att bara kunna köras med arbetsprocesser.
+
 
 Målet är att spelet ska kunna spelas i webbläsaren och delas med en länk.
 
@@ -747,16 +750,165 @@ Målet är att spelet ska kunna spelas i webbläsaren och delas med en länk.
 | 7c Tidslopp | Medel | 7a, 7b | Utmaning med rekord |
 | 7d Träd, byar, fyrar | Stor | grund 2–3 | Levande värld, landmärken |
 | 7e Väder | Medel | – | Variation, svårighet |
-| 7f Webb | Medel | allt ovan | Delbart |
+| 7f Webb | Medel | allt ovan | Delbart (överhoppad) |
 
-**Fler idéer** som kan få egna delfaser senare:
-- Bränsle och räckvidd, kopplat till flygfälten.
-- Fler flygplanstyper med olika `AircraftSettings` och sprites.
-- Utmärkelser, till exempel *landa på 10 fält* eller *loopa under 50 enheter*.
-- Fotoläge (dölj HUD, fri kamera och `pyxel.screen.save`).
-- Repris av den senaste minuten.
-- Floder som skär genom terrängen.
-- Trafik i form av andra plan som följer banor mellan flygfälten.
+### Fas 8 – Fler sätt att flyga
+
+Fas 7 gav världen innehåll. Fas 8 handlar om **hur man flyger i den och vad man tar med sig därifrån**: att fånga och se om fina ögonblick, att planera flygningar efter bränsle, att välja plan, floder att följa, annan trafik i luften och utmärkelser som binder ihop allt. Som i fas 7 går varje delfas att köra för sig, och ordningen är vald så att senare delar kan bygga på tidigare.
+
+#### Gemensamma grunder
+
+**1. Händelser.** Mycket av det som händer i spelet syns i dag bara som toasts direkt i `App`: landning med betyg, krasch med orsak, passerad ring, upptäckt fyr och besökt flygfält. Därför införs en enkel händelselogg, `sim/events.py`. Varje händelse är en `Event(kind, time, data)`, och `App` publicerar händelserna i stället för att reagera direkt. Toasts, ljud, sparning, repriser (8b) och utmärkelser (8g) lyssnar sedan på samma ström. Loggen är ren Python utan Pyxel, så den kan testas med syntetiska händelser.
+
+**2. Fri kamera.** Spökkameran (`G`) flyger redan fritt men är tänkt för att flytta planet. Kamerastyrningen bryts ut till en `FreeCamera` med tre lägen:
+- *Flyg:* som spökkameran i dag.
+- *Kretsa:* runt en punkt, till exempel planet.
+- *Fast:* stå på en punkt och följa ett mål, som ett torn vid banan.
+
+Fotoläget (8a) och repriserna (8b) använder samma kod.
+
+**3. Andra plan i 3D.** Rekordspöket i tidsloppen ritas redan som en halvgenomskinlig sprite, och `sprite_angle` lutar spriten efter planets bank. Det blir en gemensam `draw_aircraft(sprites, position, forward, up, camera)` som väljer vy efter vinkeln mellan planets nos och kameran: bakifrån, framifrån eller från sidan. Repriser, trafik och flygplanstyper använder den. Det kräver sprites från fler håll än bara bakifrån (`PLANE_REAR`).
+
+**4. Profil över alla världar.** `WorldSave` är per seed. Utmärkelser, valt flygplan och inställningar som bränsle av eller på gäller spelaren, inte världen. De sparas därför i en egen `profile.json` i samma mapp, med samma atomiska skrivning och versionsnummer som i 7a.
+
+**5. Budgetar:**
+
+| Resurs | Läge idag | Utrymme för fas 8 |
+|---|---|---|
+| Bildruta (33 ms) | ~20 ms på en långsam dag med väder och objekt | Trafik och repriser ≤ 2 ms tillsammans. Floderna får inte märkas i renderingen, eftersom de bara är terräng. |
+| Generering per tile | ~13–27 ms beroende på dag | Floder ≤ 15 % extra |
+| Palett (256) | 240 används | 16 kvar. Floder återanvänder vattenrampen. Nya plan använder de 16 standardfärgerna. |
+| Ljudkanaler (4) | motor, vind/regn, varningar, effekter | Inga nya. Trafikens motorljud hörs inte, och bränslevarningen går på varningskanalen. |
+
+---
+
+#### 8a – Fotoläge *(liten)*
+
+Målet är att kunna stanna tiden, ställa upp en bild och spara den.
+
+- **Frys och frigör:** `F2` (eller *PHOTO MODE* i pausmenyn) stoppar simuleringen. Planet, partiklarna, molnen, vågorna och regnet står still, och HUD:en göms. Kameran blir en `FreeCamera` som startar där den var och kretsar runt planet. Med `Tab` växlar man till fri flygning. Kameran kan inte åka genom terrängen eller längre än ~400 enheter från planet, så att terrängen runt omkring redan finns.
+- **Inställningar i bilden:** tid på dygnet (`T`), väder (*WEATHER*-listan från 7e, men direkt utan övergång), synfält (zoom ändrar `focal`) och en ram eller vinjett att slå av och på. Planet kan visas eller döljas, och rök och regn fryses i sin aktuella bildruta.
+- **Spara:** `Enter` sparar bilden med `pyxel.screen.save` i skala 3 till `photos/` i spardatamappen. Filnamnet innehåller seed, position och tid, till exempel `seed42_x1203_y-880_dusk.png`, så att man kan hitta tillbaka. En kort blixt och toasten *PHOTO SAVED* visas, men först efter att bilden tagits.
+- **Platser:** i fotoläget kan man spara kamerans position som plats (7a), så att man kan flyga dit igen.
+
+**Tester:** att simuleringen inte stegar när den är fryst (planets och partiklarnas tillstånd är oförändrat efter N bildrutor), att kameran håller sig inom gränsen och ovanför terrängen, och att filnamnet blir rätt. **Klart när:** man kan stanna mitt i en loop i skymning, kretsa runt planet och spara en bild utan HUD.
+
+#### 8b – Repris av den senaste minuten *(medel)*
+
+Målet är att kunna se om en landning, en loop eller en krasch från andra vinklar.
+
+- **Inspelning:** en ringbuffert med planets tillstånd 10 gånger per sekund i 60 sekunder (600 rader): position, framåt- och uppvektor, gas, fart och flygtillstånd. Den tar ~50 kB och kostar inget märkbart. Händelser (krasch, landning, ring) från händelseloggen sparas med tidsstämpel. Uppspelningen interpolerar position linjärt och orientering med normaliserad interpolation av vektorerna. Det generaliserar `ghost_position` från tidsloppen.
+- **Uppspelning:** `F3`, eller *REPLAY* i pausmenyn och kraschvyn, startar repris från början av bufferten. Spelet pausas under tiden, och vädret och tiden på dygnet står still.
+  - Styrning: `←`/`→` spolar, `Space` pausar och fart ½×, 1× eller 2×.
+  - Kameror: jakt, cockpit, *torn* (en fast `FreeCamera` som väljs automatiskt nära marken längs banan och byts när planet kommer för långt bort) och fri kamera.
+  - Explosion och rök vid kraschen spelas upp på nytt från händelsen.
+- **Terrängen:** på en minut hinner planet flyga upp till ~8 km, mycket längre än den finaste nivån räcker. Kameran flyttas därför först till reprisens startpunkt med laddningsskärmen från 7a. Under uppspelningen följer världen kameran som vid vanlig flygning. Med 2× kan generatorn halka efter. Då får de grövre nivåerna synas en stund, och den uppmätta takten avgör om 2× ska begränsas.
+- **Spara repriser (valfritt):** en repris kan sparas som en kort JSON-fil, men den visas bara i samma seed.
+- **Efter reprisen** fortsätter man där man var, och terrängen laddas runt den riktiga positionen igen.
+
+**Tester:** att ringbufferten tappar de äldsta raderna, att interpolationen är kontinuerlig och träffar inspelade punkter exakt, att uppspelningen är deterministisk och att en krasch i bufferten ger en explosion vid rätt tid. **Risk:** att terrängen inte hinner med vid spolning. Det mildras med laddning vid stora hopp och en begränsning av spolfarten.
+
+#### 8c – Bränsle och räckvidd *(liten–medel)*
+
+Målet är att längre flygningar ska behöva planeras och att flygfälten ska bli viktigare.
+
+- **Förbrukning:** `Aircraft.fuel` (0–1) minskar med `burn * (0.3 + 0.7 * throttle**1.5) * dt`. Full gas ska räcka ~8 minuter och marschfart ~15 minuter. Med tom tank försvinner dragkraften, motorljudet tystnar och man får glidflyga. *FUEL LOW* blinkar under 15 %.
+- **Tankning:** står planet stilla på en bana fylls tanken under ~5 sekunder, med ett ljud och toasten *REFUELLING*. Det kräver att man har landat. Att respawna fyller också tanken, så att respawn inte blir ett sätt att fuska.
+- **HUD och karta:** en bränslemätare bredvid gasreglaget visar procent och ungefärlig tid kvar vid nuvarande förbrukning. På stora kartan visar en cirkel räckvidden vid marschfart. Flygfält inom räckvidden markeras och de utanför blir grå.
+- **Av eller på:** bränslet är **av** som standard och slås på med *FUEL: OFF/ON* i pausmenyn. Valet sparas i profilen. Tidsloppen tankar alltid fullt vid start.
+- **Bedömning:** en landning utan motor får ett eget tillägg i betyget, *DEADSTICK*, vilket utmärkelserna (8g) kan använda.
+
+**Tester:** förbrukningen vid olika gas, att tom tank ger noll dragkraft men fortsatt styrning, att tankning bara sker stillastående på en bana, och att räckviddscirkeln stämmer med en simulerad flygning vid marschfart (inom 10 %).
+
+#### 8d – Fler flygplanstyper *(medel)*
+
+Målet är att planen ska kännas olika och passa olika sorters flygning.
+
+- **Typer**, var och en en `AircraftType` med namn, `AircraftSettings`, sprites, motorljudets grundton och tankstorlek:
+
+  | Typ | Känsla | Exempel på skillnader mot dagens plan |
+  |---|---|---|
+  | `TRAINER` | dagens plan, förlåtande | – |
+  | `STUNT` | snabb roll, loopar på liten yta | roll 3,2 rad/s, tipp 1,8, stall 42, mindre bränsle |
+  | `CARGO` | tung och stabil, lång startsträcka | toppfart 110, tipp 0,7, roll 1,0, start 70, stor tank, mindre påverkad av turbulens |
+  | `SEAPLANE` | landar på vatten | flottörer i stället för hjul, och vatten räknas som bana |
+
+- **Sjöflygplanet** är det som kräver mest. I dag ger vatten under hjulen krasch. För `SEAPLANE` räknas vatten som mark vid `sea_level`, och en "landning" på vatten bedöms med samma sjunkhastighet. Land under flottörerna ger däremot krasch, utom på banor. Det öppnar sjöar och hav som mål.
+- **Val av plan:** på startskärmen (`←`/`→` på en egen rad) och i pausmenyn med *CHANGE AIRCRAFT*, men bara när man står still på ett flygfält. Valet sparas i profilen.
+- **Grafik:** varje typ får sprites bakifrån och från sidan (se gemensam grund 3) och ett eget vrak. Vraken sparas med typ, så att ett gammalt sjöflygplansvrak ser ut som ett.
+- **Rekord:** tidsloppsrekord sparas per typ (`records[field][type]`). Äldre filer läses in som `TRAINER`.
+- **Balans:** typerna justeras med samma verktyg som i fas 4, alltså debugöverlägget och konstanter i ett ställe. Ett skript flyger varje typ och skriver ut toppfart, stallfart, svängradie och startsträcka.
+
+**Tester:** att varje typs toppfart, stallfart och startsträcka hamnar inom sina mål, att sjöflygplanet landar på vatten men kraschar på land utanför banor, att det vanliga planet fortfarande kraschar i vatten, och att gamla sparfiler läser in rekord och vrak rätt.
+
+#### 8e – Floder *(stor)*
+
+Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga vägar mellan kust och berg.
+
+- **Krav:** terrängen beräknas punkt för punkt, och varje tile måste kunna räknas ut utan grannar. Riktiga floder följer vattnets väg nedför, vilket kräver kunskap om stora områden. Därför används en punktvis approximation:
+  - Ett lågfrekvent brus `r(x, y)` med domain warp. Flodernas mittlinjer är där `|r|` är nära noll, alltså nivåkurvor som ger långa, slingrande och sammanhängande linjer utan ändar mitt i landskapet.
+  - Avståndet till mittlinjen uppskattas med `|r| / |∇r|` (brusets gradient räknas numeriskt). Det ger en bredd i världsenheter: 6–20 enheter för själva floden och 60–200 för dalen.
+- **Graven:** i dalen sänks marken mjukt mot en flodnivå strax över havet, till exempel `sea_level + 0.08 * (h - sea_level)`. Den skär djupare i låglandet och blir en ravin i bergen. Där höjden blir under havsnivån blir det vatten, så floden får rätt vattenyta och vågor helt gratis. Floden tunnas ut och slutar i högfjällen (över ~250 enheter) i stället för att såga rakt genom toppar.
+- **Biom:** vattenbiomet i fåran, sand vid kanterna och mer fukt i dalen, vilket ger skog och gräs längs floden. Byar (7d) som ligger nära floder räknas som att de har vatten inom räckhåll.
+- **Samspel:** flygfält jämnas ut på den färdiga terrängen och undviker floder (kontrolleras redan via flackhet och vatten). Träd hamnar inte i floden eftersom den är vatten. På kartan och minikartan syns floderna automatiskt.
+- **Gamla världar:** samma seed får ny terräng. Sparade vrak och platser kan då hamna i en flod. Vrakens höjd räknas därför om när världen laddas, och sparfilen får en `terrain_version`. Platser i vatten flyttas upp till säker höjd.
+- **Flyga längs floden:** utmärkelser (8g) som *följ en flod 5 km under 50 enheter*, och tidslopp längs floddalar kan bli en variant av 7c senare.
+
+**Tester:** att tiles fortfarande är sömlösa, att flodvatten bildar långa sammanhängande stråk (största sammanhängande komponent över en viss längd på en 8 × 8 km karta), att floderna inte korsar högfjäll, att generering per tile blir högst 15 % dyrare och att gamla vrak flyttas upp till marken. **Risk:** floderna kan se ut som kanaler med jämn bredd, och dalarna kan skära sönder flygfält och byar. Det mildras med warp, bredd som varierar längs floden, och med att flygfält och byar placeras efter floderna.
+
+#### 8f – Trafik mellan flygfälten *(stor)*
+
+Målet är att världen ska kännas befolkad även i luften.
+
+- **Tidtabell i stället för simulering:** trafiken simuleras inte överallt. Varje par av närliggande flygfält har en tidtabell som slumpas från `(seed, fält A, fält B, tidsfönster)`, så att ett visst plan alltid lyfter vid samma speltid. Ett plans läge räknas ut i sluten form ur rutten och tiden sedan start. Därför behöver bara planen nära spelaren räknas ut, och de hoppar inte när man kommer närmare.
+- **Rutten:**
+  1. Start längs banan och stigning.
+  2. Marsch på en höjd över terrängens högsta punkt längs linjen plus 150 enheter, mätt med `elevation` i stickprov.
+  3. En svag sväng in mot den andra banans förlängning, sjunkning och landning.
+
+  Rutten är en kedja av raka och böjda bitar med känd längd, så läget vid tiden *t* är en uppslagning.
+- **Ritning:** högst ~8 plan inom 3 km ritas med `draw_aircraft` (gemensam grund 3), med lanternor i skymning och natt (som fyrarnas lampor). Typen slumpas bland 8d:s typer.
+- **Säkerhet:** en kollision med ett trafikplan ger kraschen *MIDAIR COLLISION*. *TRAFFIC* blinkar och en markör visas på minikartan när ett plan är inom 400 enheter och ±100 i höjd. Trafikplanen väjer inte, men de syns långt i förväg.
+- **Flygfälten lever:** ett plan som står på banan vid start eller landning ger ett hinder. Att landa samtidigt som någon annan ger *RUNWAY OCCUPIED* i stället för betyg. Det är valfritt och kan vänta.
+- **Av eller på:** *TRAFFIC: ON/OFF* i pausmenyn, sparat i profilen. Under tidslopp är trafiken av.
+
+**Tester:** att tidtabellen är deterministisk och inte beror på i vilken ordning fält efterfrågas, att lägena är kontinuerliga i tiden (inga hopp över bitgränser), att rutterna går fria från terrängen med minst 100 enheters marginal i stickprov, att kollisionen fungerar och att trafikens beräkning tar högst 1 ms per bildruta med 8 plan. **Risk:** rutter genom berg eller orimliga svängar. Det mildras med höjdmarginalen, en största sväng per sekund och att fält som ligger för långt ifrån varandra eller har för hög terräng mellan sig inte paras ihop.
+
+#### 8g – Utmärkelser *(medel, gör sist)*
+
+Målet är att ge små mål som får spelaren att prova allt det andra.
+
+- **Definitioner som data:** varje utmärkelse är ett namn, en beskrivning och ett villkor, antingen över räknare (*LANDA PÅ 10 OLIKA FÄLT*) eller en detektor som lyssnar på händelser och flygtillstånd. De ligger i `sim/achievements.py`. Uppnådda utmärkelser sparas i profilen med datum och seed.
+- **Detektorer** (ren logik utan Pyxel, testbar med syntetiska flygbanor):
+  - *Loop:* tippvinkeln har ackumulerat ett helt varv inom 20 sekunder medan bankvinkeln hållits under ~30°. Planets lägsta höjd över marken under loopen sparas, så att *LOOP UNDER 50* går att avgöra.
+  - *Rygglänge:* sekunder i följd med uppvektorns z < −0,8.
+  - *Låg passage:* fart över 120 och höjd under 10 enheter i 3 sekunder.
+  - *Under molnbasen i storm*, *genom ett moln*, *landning i stark sidvind* (vind tvärs banan över 12 när planet sätter ned).
+- **Förslag på en första lista** (~20):
+  - Utforskning: *FIRST FLIGHT*, *VISIT 5 / 10 / 25 AIRFIELDS*, *DISCOVER 5 LIGHTHOUSES*, *FLY 100 KM IN ONE WORLD*.
+  - Landningar: *BUTTER* (perfekt sättning), *DEADSTICK* (utan motor, 8c), *CROSSWIND* (7e), *SPLASHDOWN* (vattenlandning, 8d).
+  - Konstflyg: *LOOP*, *LOOP UNDER 50*, *10 SECONDS INVERTED*, *BARREL ROLL*.
+  - Tidslopp: *FINISH A TIME TRIAL*, *BEAT YOUR RECORD*, *ALL RINGS UNDER 60 S*.
+  - Övrigt: *RIVER RUN* (8e), *NEAR MISS* (trafik inom 30 enheter, 8f), *PHOTOGRAPHER* (10 foton, 8a), *HARD LESSONS* (krascha in i en fyr).
+- **Visning:** en toast med eget ljud när en utmärkelse nås, och en lista i pausmenyn (*ACHIEVEMENTS*). Där visas de uppnådda och de som återstår, med beskrivning. Dolda utmärkelser visas som *???* tills de nås.
+
+**Tester:** varje detektor med syntetiska flygbanor, både sådana som ska räknas och sådana som nästan ska räknas (en loop med för stor bank, en låg passage som är för kort), att räknare överlever omstart via profilen, och att en utmärkelse bara ges en gång. **Risk:** detektorer som ger fel eller missar och känns orättvisa. Därför testas gränsfallen och tröskelvärdena ligger i konstanter.
+
+---
+
+#### Ordning och beroenden (fas 8)
+
+| Delfas | Storlek | Beroende av | Värde |
+|---|---|---|---|
+| 8a Fotoläge | Liten | grund 2 | Snabbt glädjeämne, fina bilder från världen |
+| 8b Repris | Medel | grund 1–3, 8a | Se om landningar, loopar och krascher |
+| 8c Bränsle | Liten–medel | 7b | Planering, flygfälten får en funktion |
+| 8d Flygplanstyper | Medel | grund 3–4, 8c | Variation, vattenlandningar |
+| 8e Floder | Stor | – | Landskap att följa, nya mål för utmärkelser |
+| 8f Trafik | Stor | grund 3, 7b, 8d | Levande luftrum |
+| 8g Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
+
+8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8f, eftersom trafikens rutter då tar hänsyn till floddalarna från början.
 
 ## Prestanda och risker
 
