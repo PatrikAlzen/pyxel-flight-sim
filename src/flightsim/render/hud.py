@@ -380,4 +380,6 @@ class Hud:
         centered_text(8, "CRASHED", WARN)
         centered_text(16, plane.crash_reason, TEXT)
         countdown = max(0, math.ceil(self.respawn_delay - plane.state_time))
-        centered_text(h - 12, f"RESPAWN IN {countdown}  (R)", pyxel.COLOR_GRAY)
+        centered_text(
+            h - 12, f"RESPAWN IN {countdown} (R)   REPLAY (F3)", pyxel.COLOR_GRAY
+        )

@@ -63,3 +63,8 @@ PHOTO_FOVS = (90.0, 70.0, 50.0, 35.0, 25.0)  # degrees, Z/X step through them
 PHOTO_PLANE_SPAN = 5.5  # world units across the plane's sprites
 PHOTO_SCALE = 3  # saved image is this many times the screen size
 PHOTO_FLASH = 0.2  # seconds of white after taking a photo
+
+# Replays.
+REPLAY_MIN = 1.0  # seconds recorded before there is anything to replay
+REPLAY_SEEK = 5.0  # seconds per press of left or right
+REPLAY_RELOAD = 2.0  # camera jumps beyond this many times the finest level's reach load

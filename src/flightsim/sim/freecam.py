@@ -136,3 +136,13 @@ class FreeCamera:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
+
+
+def look_at(camera: Camera, target: np.ndarray) -> None:
+    """Turn ``camera`` (wings level) to look straight at ``target``."""
+    offset = np.asarray(target, dtype=float) - np.array(camera.position, dtype=float)
+    horizontal = math.hypot(offset[0], offset[1])
+    if horizontal > 1e-6:
+        camera.heading = math.atan2(offset[0], -offset[1]) % math.tau
+    camera.pitch = _clamp(math.atan2(offset[2], horizontal), -MAX_PITCH, MAX_PITCH)
+    camera.roll = 0.0

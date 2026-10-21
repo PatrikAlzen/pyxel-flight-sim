@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget är klart, och kvar är repris, bränsle, flygplanstyper, floder, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e, 8a och 8b klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget och repriserna är klara, och kvar är bränsle, flygplanstyper, floder, trafik och utmärkelser.
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), fotoläge, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), fotoläge, repris, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -218,6 +218,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `Esc` / `Q` på startskärmen | – | Avsluta |
 | `C` | `Y` | Cockpit / jaktkamera |
 | `T` | Höger spak (klick) | Tid på dygnet: dag → skymning → natt |
+| `F3` | – | Repris av den senaste minuten (även i pausmenyn och kraschvyn): `←`/`→` spolar 5 s, `Space` pausar, `↑`/`↓` byter fart (½×, 1×, 2×), `C` byter kamera (jakt, cockpit, torn, fri), `H` döljer hjälptexten |
 | `F2` | – | Fotoläge (även i pausmenyn). Hjälptexten i bild visar tangenterna: `Tab` kretsa/flyg, `Z`/`X` zoom, `V` väder, `F` ram, `O` planet, `Enter` spara bild, `H` hjälptext |
 
 ### Ljud
@@ -259,6 +260,8 @@ pyxel-flight-sim/
 │       │   ├── aircraft.py    # flygmodell
 │       │   ├── camera.py      # kamerans position och orientering
 │       │   ├── freecam.py     # fri kamera för fotoläget: kretsa runt planet eller flyg
+│       │   ├── events.py      # händelselogg: krasch, landning, ring
+│       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
@@ -274,7 +277,8 @@ pyxel-flight-sim/
     ├── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
     ├── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
     ├── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
-    └── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
+    ├── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
+    └── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
 ```
 
 ## Implementationsplan
@@ -825,7 +829,7 @@ Målet är att kunna stanna tiden, ställa upp en bild och spara den.
   - De sparade bilderna saknar hjälptext och toast men har ram och regn.
 - **Inte gjort:** synfältet ändras i steg och inte steglöst. Ingen vinjett, bara letterbox-ram.
 
-#### 8b – Repris av den senaste minuten *(medel)*
+#### 8b – Repris av den senaste minuten ✅
 
 Målet är att kunna se om en landning, en loop eller en krasch från andra vinklar.
 
@@ -839,6 +843,38 @@ Målet är att kunna se om en landning, en loop eller en krasch från andra vink
 - **Efter reprisen** fortsätter man där man var, och terrängen laddas runt den riktiga positionen igen.
 
 **Tester:** att ringbufferten tappar de äldsta raderna, att interpolationen är kontinuerlig och träffar inspelade punkter exakt, att uppspelningen är deterministisk och att en krasch i bufferten ger en explosion vid rätt tid. **Risk:** att terrängen inte hinner med vid spolning. Det mildras med laddning vid stora hopp och en begränsning av spolfarten.
+
+**Resultat:**
+- **Händelselogg** ([sim/events.py](src/flightsim/sim/events.py), gemensam grund 1): `EventLog.emit(kind, position, text)` når alla som lyssnar. Spelet publicerar krascher (med orsak), betygsatta landningar och passerade ringar. Inspelaren lyssnar. Toasts och ljud anropas fortfarande direkt och flyttas över när utmärkelserna (8g) behöver det.
+- **Inspelning** ([sim/replay.py](src/flightsim/sim/replay.py)):
+  - `Recorder` tar ett prov 10 gånger per sekund i jämn takt i en ringbuffert om 600 rader: tid, position, framåt- och uppvektor, gas, fart och flygtillstånd. Händelser sparas med tid och rensas när deras prov försvinner ur bufferten.
+  - Ett hopp på över 50 enheter mellan två prov (respawn, sparad plats, tidslopp) eller en återupplivning efter krasch startar en ny inspelning, så att reprisen aldrig visar planet teleportera. Därför behöver ingen annan kod rensa bufferten.
+  - Efter en krasch spelas 4 sekunder in och sedan inget mer, så att kraschen finns kvar i bufferten i stället för en minut av ett stillastående vrak.
+  - Spökkameran spelas inte in.
+- **Uppspelning:**
+  - `Recording.at(t)` interpolerar position linjärt, och framåt- och uppvektorerna normaliseras och hålls vinkelräta.
+  - `Playback` stegar med farten ½×, 1× eller 2× och rapporterar de händelser den passerar. När man spolar hoppar den över händelserna på vägen.
+  - `F3`, *REPLAY* i pausmenyn eller `F3` i kraschvyn startar reprisen. Det levande spelet står still under tiden, och ljudet tystnar.
+- **Kameror** (`C`):
+  - *CHASE:* en egen jaktkamera.
+  - *COCKPIT.*
+  - *TOWER:* en fast kamera 45 enheter vid sidan av där planet är om 2,5 s, nära marken eller högst 40 enheter under planet. Den följer planet med blicken och flyttar till andra sidan när planet är mer än 220 enheter bort.
+  - *FREE:* kretsar runt planet med `A`/`D`, `Q`/`E` och `W`/`S`.
+  - Efter kraschen tittar jakt- och cockpitkameran på vraket från där de var.
+- **Krascher i reprisen:** explosionen spelas upp när händelsen passeras, och röken brinner så länge planet ligger kraschat. Det sker i en egen partikeluppsättning, så att det levande spelets rök ligger kvar. Vraket från kraschen syns inte förrän kraschen har skett i reprisen. Planet ritas med `draw_aircraft` från 8a.
+- **Terrängen:** ligger reprisens start eller ett spolat läge mer än två gånger den finaste nivåns räckvidd bort, visas laddningsskärmen. `begin_loading` har nu ett `then` för vad som ska hända efteråt, i stället för att placera planet. Vid kortare hopp syns de grövre nivåerna en kort stund. När reprisen avslutas kommer man tillbaka dit man var, och terrängen laddas om om det behövs.
+- **Bild:** längst ned en tidslinje, tid och längd, fart, kamera och *PAUSED* eller *END*, och ovanför en hjälptext som `H` döljer. Landningsbetyg och ringar visas som toasts när de passeras.
+- **Tester:** 8 nya (totalt 213):
+  - Inspelning: att bufferten håller den senaste minuten, att interpolationen träffar proven och saknar hopp, och att ett hopp ger en ny inspelning.
+  - Krasch: att kraschen och 4 sekunder efteråt sparas, och att respawn börjar om.
+  - Uppspelning: att händelser rapporteras en gång vid rätt tid och hoppas över vid spolning, och att uppspelningen är deterministisk och står still när den är pausad.
+  - Händelseloggen och tornkamerans placering.
+- **Provkört i riktigt fönster:** en flygning med svängar slutade i ett träd. `F3` i kraschvyn startade reprisen, och jag gick igenom jakt-, cockpit-, torn- och fri kamera med explosion och rök. Sedan spolade jag bakåt och pausade, och `F3` ledde tillbaka till kraschvyn med röken kvar.
+  - Med 0,5 gånger räckvidden som gräns gav varje spolning på 5 s en laddningsskärm. Gränsen höjdes därför till 2 gånger.
+- **Inte gjort:**
+  - Repriser sparas inte till fil.
+  - Tidsloppets ringar visar läget just nu, inte läget vid tiden i reprisen.
+  - Fotoläget går inte att starta från en repris.
 
 #### 8c – Bränsle och räckvidd *(liten–medel)*
 

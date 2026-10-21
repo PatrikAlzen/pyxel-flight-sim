@@ -23,6 +23,7 @@ import argparse
 import math
 import random
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum, auto
 
@@ -84,7 +85,8 @@ from flightsim.render.worldmap import (
 from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
-from flightsim.sim.freecam import FreeCamera, FreeMode
+from flightsim.sim.events import EventKind, EventLog
+from flightsim.sim.freecam import FreeCamera, FreeMode, look_at
 from flightsim.sim.particles import Particles
 from flightsim.sim.race import (
     Course,
@@ -94,6 +96,7 @@ from flightsim.sim.race import (
     format_time,
     ghost_position,
 )
+from flightsim.sim.replay import Playback, Recorder, TowerSettings, tower_spot
 from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import Airfield, landing_report
@@ -110,6 +113,7 @@ PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
 TOAST_SECONDS = 2.0
 RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
 GHOST_PLANE_WIDTH = 6.0  # world units, for drawing the record run's plane
+REPLAY_VIEWS = ("CHASE", "COCKPIT", "TOWER", "FREE")  # C cycles through them
 
 
 class Mode(Enum):
@@ -119,6 +123,7 @@ class Mode(Enum):
     PAUSED = auto()
     MAP = auto()
     PHOTO = auto()
+    REPLAY = auto()
 
 
 def make_world(seed: int) -> TerrainWorld:
@@ -215,6 +220,21 @@ class App:
         self.photo_help = True
         self.photo_requested = False
         self.photo_flash_until = 0.0
+        # Replays: the recorder hears about crashes, landings and rings.
+        self.events = EventLog()
+        self.recorder = Recorder()
+        self.events.subscribe(self.recorder.mark)
+        self.playback: Playback | None = None
+        self.replay_plane = Aircraft()  # posed from the recording each frame
+        self.replay_chase = ChaseCamera()
+        self.replay_view = 0  # index into REPLAY_VIEWS
+        self.replay_free: FreeCamera | None = None
+        self.tower: np.ndarray | None = None
+        self.tower_side = 1.0
+        self.replay_help = True
+        self.live_particles = self.particles  # set aside during a replay
+        self.replay_return: tuple[float, ...] = ()
+        self.after_loading: Callable[[], None] | None = None
         self.render_time = Timer()
         self.frame_time = Timer()
         self.last_frame = time.perf_counter()
@@ -289,6 +309,8 @@ class App:
                 self.update_map()
             case Mode.PHOTO:
                 self.update_photo()
+            case Mode.REPLAY:
+                self.update_replay()
 
     def update_title(self) -> None:
         seed = self.seed
@@ -329,6 +351,7 @@ class App:
         self.apply_weather()
         self.particles.clear()
         self.wrecks.clear()
+        self.recorder.clear()
         self.saved = self.store.load(self.seed)
         for wreck in self.saved.wrecks:
             self.wrecks.add(np.array(wreck))
@@ -358,12 +381,15 @@ class App:
         heading: float,
         altitude: float | None = None,
         on_ground: bool = False,
+        then: Callable[[], None] | None = None,
     ) -> None:
         """Show a progress bar while the terrain around (x, y) is generated.
 
         Background workers generate the area; afterwards they keep generating
-        as the camera moves. The plane is placed there once everything is in.
+        as the camera moves. The plane is placed there once everything is in,
+        or, with ``then``, that is called instead (the camera just looks there).
         """
+        self.after_loading = then
         self.spawn = (x, y, heading, altitude)
         self.spawn_on_ground = on_ground
         self.world.update(x, y)
@@ -382,6 +408,10 @@ class App:
         pending = self.world.pending
         self.progress = 1 - pending / self.load_total
         if pending == 0:
+            if self.after_loading is not None:
+                then, self.after_loading = self.after_loading, None
+                then()
+                return
             if self.spawn_on_ground:
                 self.aircraft.park(x, y, heading, self.world.height_at)
                 self.ghost = False
@@ -415,6 +445,9 @@ class App:
         if pressed(Action.PHOTO):
             self.enter_photo()
             return
+        if pressed(Action.REPLAY):
+            self.start_replay()
+            return
         if pressed(Action.MAP):
             self.mode = Mode.MAP
             return
@@ -442,6 +475,7 @@ class App:
             self.move_ghost()
         else:
             self.fly()
+            self.recorder.record(self.aircraft, DT)
             plane = self.aircraft
             agl = plane.altitude - self.world.height_at(plane.x, plane.y)
             self.audio.update(plane, agl, self.weather.current.rain)
@@ -485,6 +519,8 @@ class App:
                 self.cycle_weather()
             case "PHOTO MODE":
                 self.enter_photo()
+            case "REPLAY":
+                self.start_replay()
             case "NEW WORLD":
                 self.close_world()
                 self.mode = Mode.TITLE
@@ -506,6 +542,7 @@ class App:
             *trial,
             weather,
             "PHOTO MODE",
+            "REPLAY",
             "NEW WORLD",
             "QUIT",
         ]
@@ -629,6 +666,189 @@ class App:
         agl = plane.altitude - self.world.height_at(plane.x, plane.y)
         in_cloud = self.clouds.inside(plane.x, plane.y, plane.altitude)
         return turbulence_intensity(self.weather.current, agl, slope, in_cloud)
+
+    # --- replay -----------------------------------------------------------
+
+    def start_replay(self) -> None:
+        """Play back the last minute; the live game waits where it is."""
+        recording = self.recorder.recording()
+        if recording is None or recording.duration < config.REPLAY_MIN:
+            self.show_toast("NOTHING TO REPLAY")
+            return
+        cam = self.camera
+        self.replay_return = (cam.x, cam.y, cam.altitude, cam.heading, cam.pitch)
+        self.replay_return += (cam.roll,)
+        self.playback = Playback(recording)
+        self.live_particles, self.particles = self.particles, Particles()
+        self.replay_chase.reset()
+        self.replay_free = None
+        self.tower = None
+        self.pose_replay_plane()
+        self.follow_replay(DT)
+        self.load_around_camera(Mode.REPLAY, self.replay_return[:2])
+
+    def load_around_camera(self, mode: Mode, came_from: tuple[float, float]) -> None:
+        """Switch to ``mode``, through the loading screen if the camera has
+        moved too far from ``came_from`` for the terrain there to be ready."""
+        cam = self.camera
+        far = self.world.levels[0].safe_radius * config.REPLAY_RELOAD
+        if math.hypot(cam.x - came_from[0], cam.y - came_from[1]) > far:
+            self.begin_loading(
+                cam.x, cam.y, cam.heading, then=lambda: self.set_mode(mode)
+            )
+        else:
+            self.mode = mode
+
+    def set_mode(self, mode: Mode) -> None:
+        self.mode = mode
+
+    def exit_replay(self) -> None:
+        self.particles = self.live_particles
+        self.playback = None
+        cam = self.camera
+        came_from = (cam.x, cam.y)
+        cam.x, cam.y, cam.altitude, cam.heading, cam.pitch, cam.roll = (
+            self.replay_return
+        )
+        if not self.ghost:
+            self.chase.reset()
+            self.follow_aircraft()
+        self.load_around_camera(Mode.FLYING, came_from)
+
+    def pose_replay_plane(self) -> None:
+        pose = self.playback.pose()
+        plane = self.replay_plane
+        plane.x, plane.y, plane.altitude = (float(v) for v in pose.position)
+        plane.forward, plane.up = pose.forward, pose.up
+        plane.throttle, plane.speed, plane.state = pose.throttle, pose.speed, pose.state
+
+    def update_replay(self) -> None:
+        playback = self.playback
+        if pressed(Action.REPLAY) or pressed(Action.PAUSE):
+            self.exit_replay()
+            return
+        if pressed(Action.CONFIRM):
+            playback.paused = not playback.paused
+            if playback.finished:
+                playback.time, playback.paused = 0.0, False
+                self.particles.clear()
+        if pressed(Action.UP):
+            playback.faster(1)
+        if pressed(Action.DOWN):
+            playback.faster(-1)
+        if pressed(Action.CAMERA):
+            self.replay_view = (self.replay_view + 1) % len(REPLAY_VIEWS)
+            self.replay_free = None
+            self.tower = None
+            self.replay_chase.reset()
+        if pressed(Action.HUD_MODE):
+            self.replay_help = not self.replay_help
+        seek = config.REPLAY_SEEK * (pressed(Action.RIGHT) - pressed(Action.LEFT))
+        before = (self.camera.x, self.camera.y)
+        if seek:
+            playback.seek(seek)
+            self.particles.clear()  # smoke from another moment
+            self.replay_chase.reset()
+            self.tower = None
+
+        dt = 0.0 if playback.paused else DT * playback.speed
+        for event in playback.step(DT):
+            if event.kind is EventKind.CRASH:
+                self.particles.explode(event.position + [0.0, 0.0, 2.0])
+            elif event.text:
+                self.show_toast(event.text)
+        self.pose_replay_plane()
+        crash = playback.recording.crash()
+        if crash and self.replay_plane.state is FlightState.CRASHED and dt:
+            self.particles.burn(crash[1].position + [0.0, 0.0, 3.0], dt)
+        if dt:
+            self.particles.update(dt, self.wind)
+        self.follow_replay(dt)
+        if seek:
+            self.load_around_camera(Mode.REPLAY, before)
+        self.world.update(self.camera.x, self.camera.y)
+
+    def follow_replay(self, dt: float) -> None:
+        """Move the camera for the replay view chosen with C."""
+        plane, cam = self.replay_plane, self.camera
+        ground = self.world.height_at
+        target = np.array([plane.x, plane.y, plane.altitude])
+        crashed = plane.state is FlightState.CRASHED
+        match REPLAY_VIEWS[self.replay_view]:
+            case "CHASE" | "COCKPIT" if crashed:
+                look_at(cam, target)  # watch the crash from where the camera was
+            case "CHASE":
+                self.replay_chase.update(plane, cam, max(dt, 1e-3), ground)
+            case "COCKPIT":
+                cam.x, cam.y = plane.x, plane.y
+                cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
+                cam.set_vectors(plane.forward, plane.up)
+            case "TOWER":
+                if self.tower is None or (
+                    np.linalg.norm(self.tower - target) > TowerSettings().reach
+                ):
+                    self.tower = tower_spot(
+                        self.playback.recording,
+                        self.playback.time,
+                        ground,
+                        side=self.tower_side,
+                    )
+                    self.tower_side = -self.tower_side
+                cam.x, cam.y, cam.altitude = (float(v) for v in self.tower)
+                look_at(cam, target)
+            case "FREE":
+                if self.replay_free is None:
+                    self.replay_free = FreeCamera(cam, target)
+                free = self.replay_free
+                free.target = free.anchor = target
+
+                def keys(positive: int, negative: int) -> float:
+                    return float(pyxel.btn(positive) - pyxel.btn(negative))
+
+                free.orbit(
+                    keys(pyxel.KEY_D, pyxel.KEY_A),
+                    keys(pyxel.KEY_E, pyxel.KEY_Q),
+                    keys(pyxel.KEY_W, pyxel.KEY_S),
+                    DT,
+                    ground,
+                )
+
+    def draw_replay(self) -> None:
+        self.draw_view()
+        plane = self.replay_plane
+        cockpit = REPLAY_VIEWS[self.replay_view] == "COCKPIT"
+        if plane.state is not FlightState.CRASHED and not cockpit:
+            draw_aircraft(
+                self.plane_views,
+                TRANSPARENT,
+                np.array([plane.x, plane.y, plane.altitude]),
+                plane.forward,
+                plane.up,
+                self.camera,
+                self.renderer,
+                config.PHOTO_PLANE_SPAN,
+            )
+        playback = self.playback
+        duration = playback.recording.duration
+        shaded_rect(0, H - 12, W, 12)
+        x0, x1 = 4, W - 4
+        pyxel.line(x0, H - 11, x1, H - 11, pyxel.COLOR_GRAY)
+        done = x0 + (x1 - x0) * playback.time / duration
+        pyxel.line(x0, H - 11, done, H - 11, pyxel.COLOR_YELLOW)
+        state = "END" if playback.finished else "PAUSED" if playback.paused else ""
+        shadow_text(
+            4,
+            H - 8,
+            f"REPLAY {format_time(playback.time)}/{format_time(duration)}"
+            f"  {playback.speed:g}X  {REPLAY_VIEWS[self.replay_view]}  {state}",
+            TEXT,
+        )
+        if self.replay_help:
+            lines = ["</> SEEK  SPACE PAUSE  ^/v SPEED  C CAMERA  F3 BACK"]
+            if REPLAY_VIEWS[self.replay_view] == "FREE":
+                lines.insert(0, "A/D CIRCLE  Q/E TILT  W/S CLOSER/FURTHER")
+            for i, line in enumerate(lines):
+                shadow_text(4, H - 20 - 8 * (len(lines) - 1 - i), line, TEXT)
 
     # --- photo mode -------------------------------------------------------
 
@@ -785,6 +1005,13 @@ class App:
 
     def ring_passed(self, ring: int) -> None:
         race = self.race
+        plane = self.aircraft
+        rings = len(race.course.rings)
+        self.events.emit(
+            EventKind.RING,
+            (plane.x, plane.y, plane.altitude),
+            f"RING {ring + 1}/{rings}",
+        )
         if race.phase is Phase.FINISHED:
             self.finish_race()
             return
@@ -903,6 +1130,7 @@ class App:
             self.persist()
             report = "NEW " + report
         self.show_toast(report)
+        self.events.emit(EventKind.LANDING, (plane.x, plane.y, plane.altitude), report)
 
     def crashed(self) -> None:
         """The moment of impact: leave a wreck on the ground and blow up."""
@@ -913,6 +1141,7 @@ class App:
         self.saved.wrecks = self.wrecks.positions.tolist()
         self.persist()
         self.particles.explode(site + [0.0, 0.0, 2.0])
+        self.events.emit(EventKind.CRASH, site, plane.crash_reason)
         if self.race:
             self.race = None  # the crash screen says what happened
 
@@ -1000,6 +1229,8 @@ class App:
                 )
             case Mode.PHOTO:
                 self.draw_photo()
+            case Mode.REPLAY:
+                self.draw_replay()
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
                 if self.mode is Mode.PAUSED:
@@ -1030,6 +1261,8 @@ class App:
         nearby = self.wrecks.near(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
+        if self.mode is Mode.REPLAY:
+            nearby = self.wrecks_not_yet_crashed(nearby)
         draw_billboards(
             self.wreck_sprite,
             TRANSPARENT,
@@ -1043,10 +1276,10 @@ class App:
             draw_rings(self.race, self.camera, self.renderer)
             self.draw_record_ghost()
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
-        if chase and not self.ghost and self.mode is not Mode.PHOTO:
+        if chase and not self.ghost and self.mode is Mode.FLYING:
             self.draw_plane()
         self.draw_rain()
-        if self.mode is Mode.PHOTO:
+        if self.mode in (Mode.PHOTO, Mode.REPLAY):
             return
         match self.hud_mode:
             case HudMode.NONE:
@@ -1117,6 +1350,15 @@ class App:
         ]
         for i, line in enumerate(lines):
             shadow_text(4, H - 8 * (len(lines) - i), line, TEXT)
+
+    def wrecks_not_yet_crashed(self, wrecks: np.ndarray) -> np.ndarray:
+        """In a replay, the wreck of the crash still to come is not there yet."""
+        crash = self.playback.recording.crash()
+        if crash is None or crash[0] <= self.playback.time or not len(wrecks):
+            return wrecks
+        site = crash[1].position
+        keep = np.hypot(wrecks[:, 0] - site[0], wrecks[:, 1] - site[1]) > 1.0
+        return wrecks[keep]
 
     def draw_rain(self) -> None:
         """Rain falls below the clouds; it thins out climbing up into them."""
