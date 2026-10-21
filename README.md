@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna och floderna är klara, och kvar är trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna och floderna är klara, och kvar är broar, trafik och utmärkelser.
 
 ---
 
@@ -765,11 +765,11 @@ Målet är att spelet ska kunna spelas i webbläsaren och delas med en länk.
 
 ### Fas 8 – Fler sätt att flyga
 
-Fas 7 gav världen innehåll. Fas 8 handlar om **hur man flyger i den och vad man tar med sig därifrån**: att fånga och se om fina ögonblick, att planera flygningar efter bränsle, att välja plan, floder att följa, annan trafik i luften och utmärkelser som binder ihop allt. Som i fas 7 går varje delfas att köra för sig, och ordningen är vald så att senare delar kan bygga på tidigare.
+Fas 7 gav världen innehåll. Fas 8 handlar om **hur man flyger i den och vad man tar med sig därifrån**: att fånga och se om fina ögonblick, att planera flygningar efter bränsle, att välja plan, floder att följa och broar att flyga under, annan trafik i luften och utmärkelser som binder ihop allt. Som i fas 7 går varje delfas att köra för sig, och ordningen är vald så att senare delar kan bygga på tidigare.
 
 #### Gemensamma grunder
 
-**1. Händelser.** Mycket av det som händer i spelet syns i dag bara som toasts direkt i `App`: landning med betyg, krasch med orsak, passerad ring, upptäckt fyr och besökt flygfält. Därför införs en enkel händelselogg, `sim/events.py`. Varje händelse är en `Event(kind, time, data)`, och `App` publicerar händelserna i stället för att reagera direkt. Toasts, ljud, sparning, repriser (8b) och utmärkelser (8g) lyssnar sedan på samma ström. Loggen är ren Python utan Pyxel, så den kan testas med syntetiska händelser.
+**1. Händelser.** Mycket av det som händer i spelet syns i dag bara som toasts direkt i `App`: landning med betyg, krasch med orsak, passerad ring, upptäckt fyr och besökt flygfält. Därför införs en enkel händelselogg, `sim/events.py`. Varje händelse är en `Event(kind, time, data)`, och `App` publicerar händelserna i stället för att reagera direkt. Toasts, ljud, sparning, repriser (8b) och utmärkelser (8h) lyssnar sedan på samma ström. Loggen är ren Python utan Pyxel, så den kan testas med syntetiska händelser.
 
 **2. Fri kamera.** Spökkameran (`G`) flyger redan fritt men är tänkt för att flytta planet. Kamerastyrningen bryts ut till en `FreeCamera` med tre lägen:
 - *Flyg:* som spökkameran i dag.
@@ -849,7 +849,7 @@ Målet är att kunna se om en landning, en loop eller en krasch från andra vink
 **Tester:** att ringbufferten tappar de äldsta raderna, att interpolationen är kontinuerlig och träffar inspelade punkter exakt, att uppspelningen är deterministisk och att en krasch i bufferten ger en explosion vid rätt tid. **Risk:** att terrängen inte hinner med vid spolning. Det mildras med laddning vid stora hopp och en begränsning av spolfarten.
 
 **Resultat:**
-- **Händelselogg** ([sim/events.py](src/flightsim/sim/events.py), gemensam grund 1): `EventLog.emit(kind, position, text)` når alla som lyssnar. Spelet publicerar krascher (med orsak), betygsatta landningar och passerade ringar. Inspelaren lyssnar. Toasts och ljud anropas fortfarande direkt och flyttas över när utmärkelserna (8g) behöver det.
+- **Händelselogg** ([sim/events.py](src/flightsim/sim/events.py), gemensam grund 1): `EventLog.emit(kind, position, text)` når alla som lyssnar. Spelet publicerar krascher (med orsak), betygsatta landningar och passerade ringar. Inspelaren lyssnar. Toasts och ljud anropas fortfarande direkt och flyttas över när utmärkelserna (8h) behöver det.
 - **Inspelning** ([sim/replay.py](src/flightsim/sim/replay.py)):
   - `Recorder` tar ett prov 10 gånger per sekund i jämn takt i en ringbuffert om 600 rader: tid, position, framåt- och uppvektor, gas, fart och flygtillstånd. Händelser sparas med tid och rensas när deras prov försvinner ur bufferten.
   - Ett hopp på över 50 enheter mellan två prov (respawn, sparad plats, tidslopp) eller en återupplivning efter krasch startar en ny inspelning, så att reprisen aldrig visar planet teleportera. Därför behöver ingen annan kod rensa bufferten.
@@ -888,7 +888,7 @@ Målet är att längre flygningar ska behöva planeras och att flygfälten ska b
 - **Tankning:** står planet stilla på en bana fylls tanken under ~5 sekunder, med ett ljud och toasten *REFUELLING*. Det kräver att man har landat. Att respawna fyller också tanken, så att respawn inte blir ett sätt att fuska.
 - **HUD och karta:** en bränslemätare bredvid gasreglaget visar procent och ungefärlig tid kvar vid nuvarande förbrukning. På stora kartan visar en cirkel räckvidden vid marschfart. Flygfält inom räckvidden markeras och de utanför blir grå.
 - **Av eller på:** bränslet är **av** som standard och slås på med *FUEL: OFF/ON* i pausmenyn. Valet sparas i profilen. Tidsloppen tankar alltid fullt vid start.
-- **Bedömning:** en landning utan motor får ett eget tillägg i betyget, *DEADSTICK*, vilket utmärkelserna (8g) kan använda.
+- **Bedömning:** en landning utan motor får ett eget tillägg i betyget, *DEADSTICK*, vilket utmärkelserna (8h) kan använda.
 
 **Tester:** förbrukningen vid olika gas, att tom tank ger noll dragkraft men fortsatt styrning, att tankning bara sker stillastående på en bana, och att räckviddscirkeln stämmer med en simulerad flygning vid marschfart (inom 10 %).
 
@@ -979,7 +979,7 @@ Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga
 - **Biom:** vattenbiomet i fåran, sand vid kanterna och mer fukt i dalen, vilket ger skog och gräs längs floden. Byar (7d) som ligger nära floder räknas som att de har vatten inom räckhåll.
 - **Samspel:** flygfält jämnas ut på den färdiga terrängen och undviker floder (kontrolleras redan via flackhet och vatten). Träd hamnar inte i floden eftersom den är vatten. På kartan och minikartan syns floderna automatiskt.
 - **Gamla världar:** samma seed får ny terräng. Sparade vrak och platser kan då hamna i en flod. Vrakens höjd räknas därför om när världen laddas, och sparfilen får en `terrain_version`. Platser i vatten flyttas upp till säker höjd.
-- **Flyga längs floden:** utmärkelser (8g) som *följ en flod 5 km under 50 enheter*, och tidslopp längs floddalar kan bli en variant av 7c senare.
+- **Flyga längs floden:** utmärkelser (8h) som *följ en flod 5 km under 50 enheter*, och tidslopp längs floddalar kan bli en variant av 7c senare.
 
 **Tester:** att tiles fortfarande är sömlösa, att flodvatten bildar långa sammanhängande stråk (största sammanhängande komponent över en viss längd på en 8 × 8 km karta), att floderna inte korsar högfjäll, att generering per tile blir högst 15 % dyrare och att gamla vrak flyttas upp till marken. **Risk:** floderna kan se ut som kanaler med jämn bredd, och dalarna kan skära sönder flygfält och byar. Det mildras med warp, bredd som varierar längs floden, och med att flygfält och byar placeras efter floderna.
 
@@ -1012,10 +1012,42 @@ Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga
 - **Provkört i riktigt fönster:** lågt längs en flod öster om start (x ≈ 600, y ≈ −800) syntes fåran med vatten, skog på dalbotten, sandbankar och branta dalsidor, och floden på minikartan. Ovanifrån syntes slingorna genom dalen.
 - **Inte gjort:**
   - Floderna rinner inte nedför, vattenytan ligger på havsnivån hela vägen. Därför blir de djupa raviner i högre terräng i stället för forsar.
-  - Inga broar.
-  - Inga tidslopp eller utmärkelser längs floder ännu (8g).
+  - Inga broar ännu (8f).
+  - Inga tidslopp eller utmärkelser längs floder ännu (8h).
 
-#### 8f – Trafik mellan flygfälten *(stor)*
+#### 8f – Broar över floderna *(medel)*
+
+Målet är att floderna ska få broar som man kan flyga under, som en utmaning och som landmärken att hitta.
+
+- **Förutsättningar** (mätt på 40 flodkorsningar i den nuvarande världen): vattnet är 4–14 enheter brett (median 9). Marken 20–60 enheter från flodens mitt ligger i median 26 enheter över vattnet (de flesta mellan 11 och 53). En bro kan alltså ofta vila på dalsidorna 15–25 enheter över vattnet, vilket ger plats även för lastplanet (8,5 enheters spännvidd). I flackt lågland är dalen bred och bron behöver pelare ned till marken.
+- **Placering** (ny `terrain/bridges.py`, samma mönster som byar och fyrar):
+  - Högst en bro per cell (~1500 × 1500 enheter), med slumptal från `(seed, cell)`.
+  - I cellen hittas en punkt nära flodens mittlinje (där dalfaktorn är nära 1).
+  - Bron läggs tvärs över floden. Riktningen är flodbrusets gradient, som `_river_distance` redan räknar ut och då får lämna ut.
+  - Från mitten går man utåt åt båda hållen tills marken når däckets höjd. Höjden väljs så att den fria höjden över vattnet blir 14–25 enheter och spännvidden 30–140 enheter, annars förkastas platsen.
+  - Celler nära en by föredras, så att broarna känns befolkade. Broar läggs inte nära flygfält.
+  - Varje bro får ett namn (*BROTORP BRIDGE* efter närmaste by, annars ett genererat namn) och sparas som upptäckt i `WorldSave` när man passerat under den.
+- **Ritning** (ny `render/bridges.py`): höjdfältsrenderaren kan inte visa något man flyger under, så bron ritas ovanpå terrängen som ringarna i 7c.
+  - Däcket ritas som fyllda trianglar (`pyxel.tri`), med ovansida och undersida i olika nyanser och kanter som linjer.
+  - Räcken och pelare ritas som linjer, och pelarna går ned till marken.
+  - Färgerna tas från palettens klippramp med dimnivå efter avstånd, så att dag, skymning, natt, mulet väder och kortare sikt följer med.
+  - Hörn bakom terräng eller täta moln döljs via `pixel_distance`, precis som för andra överlägg.
+  - **Klippning mot kameran:** när man flyger under eller nära bron hamnar en del av däcket bakom kameran. Däcksytan klipps då mot ett nära plan innan den projiceras, annars försvinner bron just när man passerar.
+  - **Ritordning:** Pyxel har ingen djupbuffert, så bron sorteras mot planet i jaktvyn och mot träd och hus efter avstånd. Träd som står framför bron ritas efter den.
+  - Broar som blir mindre än ett par pixlar ritas inte, och inga broar ritas längre bort än ~1500 enheter.
+- **Kollision:** en låda för däcket (med räcken) och en per pelare, kontrollerade som träd och hus. Kraschen blir *HIT A BRIDGE*.
+- **Under bron:** när planet passerar under däcket, mellan bropelarna och i rätt riktning, visas *UNDER BROTORP BRIDGE!* med ett ljud. Händelsen `EventKind.BRIDGE` går till reprisen och till utmärkelserna (8h). Första gången sparas bron som upptäckt.
+- **Karta:** broar ritas som en kort linje över floden. Upptäckta har namn, och oupptäckta är grå (som fyrarna).
+- **Sjöflygplanet** kan landa på floden och köra under en bro.
+
+**Tester:**
+- Placering: att placeringen är deterministisk och inte beror på i vilken ordning celler efterfrågas, att varje bro korsar vatten med fri höjd och spännvidd inom gränserna, och att båda ändarna vilar på mark.
+- Kollision och passage: att däck och pelare ger krasch men passagen under inte gör det, och att en passage känns igen i båda riktningarna men inte när man flyger ovanför eller bredvid.
+- Ritning: att klippningen ger ett däck även när kameran står under bron, och att ritningen av tio synliga broar håller sig under 1 ms.
+
+**Risk:** klippningen och ritordningen när man är mycket nära eller under bron. Det mildras med tester där kameran står under däcket och med en skriptad flygning under en bro i riktigt fönster. Smala broar kan blinka på avstånd, vilket mildras med en minsta skärmstorlek.
+
+#### 8g – Trafik mellan flygfälten *(stor)*
 
 Målet är att världen ska kännas befolkad även i luften.
 
@@ -1033,7 +1065,7 @@ Målet är att världen ska kännas befolkad även i luften.
 
 **Tester:** att tidtabellen är deterministisk och inte beror på i vilken ordning fält efterfrågas, att lägena är kontinuerliga i tiden (inga hopp över bitgränser), att rutterna går fria från terrängen med minst 100 enheters marginal i stickprov, att kollisionen fungerar och att trafikens beräkning tar högst 1 ms per bildruta med 8 plan. **Risk:** rutter genom berg eller orimliga svängar. Det mildras med höjdmarginalen, en största sväng per sekund och att fält som ligger för långt ifrån varandra eller har för hög terräng mellan sig inte paras ihop.
 
-#### 8g – Utmärkelser *(medel, gör sist)*
+#### 8h – Utmärkelser *(medel, gör sist)*
 
 Målet är att ge små mål som får spelaren att prova allt det andra.
 
@@ -1048,7 +1080,7 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
   - Landningar: *BUTTER* (perfekt sättning), *DEADSTICK* (utan motor, 8c), *CROSSWIND* (7e), *SPLASHDOWN* (vattenlandning, 8d).
   - Konstflyg: *LOOP*, *LOOP UNDER 50*, *10 SECONDS INVERTED*, *BARREL ROLL*.
   - Tidslopp: *FINISH A TIME TRIAL*, *BEAT YOUR RECORD*, *ALL RINGS UNDER 60 S*.
-  - Övrigt: *RIVER RUN* (8e), *NEAR MISS* (trafik inom 30 enheter, 8f), *PHOTOGRAPHER* (10 foton, 8a), *HARD LESSONS* (krascha in i en fyr).
+  - Övrigt: *RIVER RUN* (8e), *UNDER THE BRIDGE* och *ALL THE BRIDGES ON ONE RIVER* (8f), *NEAR MISS* (trafik inom 30 enheter, 8g), *PHOTOGRAPHER* (10 foton, 8a), *HARD LESSONS* (krascha in i en fyr).
 - **Visning:** en toast med eget ljud när en utmärkelse nås, och en lista i pausmenyn (*ACHIEVEMENTS*). Där visas de uppnådda och de som återstår, med beskrivning. Dolda utmärkelser visas som *???* tills de nås.
 
 **Tester:** varje detektor med syntetiska flygbanor, både sådana som ska räknas och sådana som nästan ska räknas (en loop med för stor bank, en låg passage som är för kort), att räknare överlever omstart via profilen, och att en utmärkelse bara ges en gång. **Risk:** detektorer som ger fel eller missar och känns orättvisa. Därför testas gränsfallen och tröskelvärdena ligger i konstanter.
@@ -1064,10 +1096,11 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
 | 8c Bränsle | Liten–medel | 7b | Planering, flygfälten får en funktion |
 | 8d Flygplanstyper | Medel | grund 3–4, 8c | Variation, vattenlandningar |
 | 8e Floder | Stor | – | Landskap att följa, nya mål för utmärkelser |
-| 8f Trafik | Stor | grund 3, 7b, 8d | Levande luftrum |
-| 8g Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
+| 8f Broar | Medel | 8e, grund 3 | Något att flyga under, fler landmärken |
+| 8g Trafik | Stor | grund 3, 7b, 8d | Levande luftrum |
+| 8h Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
 
-8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8f, eftersom trafikens rutter då tar hänsyn till floddalarna från början.
+8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål.
 
 ## Prestanda och risker
 
