@@ -104,6 +104,7 @@ class Profile:
 
     fuel: bool = False  # fuel runs out and must be refilled at airfields
     aircraft: str = "TRAINER"  # name of the aircraft type flown
+    traffic: bool = True  # other aircraft flying between airfields
 
     def to_dict(self) -> dict:
         return {"version": VERSION, **asdict(self)}
@@ -113,6 +114,7 @@ class Profile:
         return cls(
             fuel=bool(data.get("fuel", False)),
             aircraft=str(data.get("aircraft", "TRAINER")),
+            traffic=bool(data.get("traffic", True)),
         )
 
 

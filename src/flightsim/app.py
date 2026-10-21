@@ -95,6 +95,7 @@ from flightsim.sim.race import (
     ghost_position,
 )
 from flightsim.sim.replay import Playback, Recorder, TowerSettings, tower_spot
+from flightsim.sim.traffic import Flight, Traffic, closest_approach, midair
 from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import (
@@ -231,6 +232,11 @@ class App:
         self.recorder = Recorder()
         self.events.subscribe(self.recorder.mark)
         self.playback: Playback | None = None
+        self.traffic: Traffic | None = None
+        self.flights: list[Flight] = []  # other aircraft near the camera now
+        self.near_misses: set[tuple] = set()  # flights already reported
+        self.closest: dict[tuple, float] = {}  # nearest each flight has come
+        self.flights_before: dict[tuple, np.ndarray] = {}  # positions a frame ago
         self.replay_plane = Aircraft()  # posed from the recording each frame
         self.replay_chase = ChaseCamera()
         self.replay_view = 0  # index into REPLAY_VIEWS
@@ -377,6 +383,10 @@ class App:
         self.particles.clear()
         self.wrecks.clear()
         self.recorder.clear()
+        self.traffic = Traffic(self.seed, self.world.generator, len(TYPES))
+        self.flights = []
+        self.near_misses.clear()
+        self.closest.clear()
         self.saved = self.store.load(self.seed)
         for wreck in self.saved.wrecks:
             kind = int(wreck[3]) if len(wreck) > 3 else 0  # older: the trainer
@@ -503,6 +513,7 @@ class App:
         self.particles.smoulder(
             self.wrecks.near(cam.x, cam.y, config.WRECK_SMOKE_DISTANCE), DT
         )
+        self.update_traffic()
         if self.ghost:
             self.move_ghost()
         else:
@@ -551,6 +562,9 @@ class App:
                 self.cycle_weather()
             case item if item.startswith("FUEL"):
                 self.toggle_fuel()
+            case item if item.startswith("TRAFFIC"):
+                self.profile.traffic = not self.profile.traffic
+                self.save_profile()
             case item if item.startswith("AIRCRAFT"):
                 self.change_aircraft()
             case "PHOTO MODE":
@@ -579,6 +593,7 @@ class App:
             weather,
             f"FUEL: {'ON' if self.profile.fuel else 'OFF'}",
             f"AIRCRAFT: {self.plane_type.name}",
+            f"TRAFFIC: {'ON' if self.profile.traffic else 'OFF'}",
             "PHOTO MODE",
             "REPLAY",
             "NEW WORLD",
@@ -1130,6 +1145,7 @@ class App:
             self.check_bridge_passes(
                 start, np.array([plane.x, plane.y, plane.altitude])
             )
+            self.check_traffic(start)
         if self.race and plane.state is not FlightState.CRASHED:
             end = np.array([plane.x, plane.y, plane.altitude])
             passed = self.race.update(DT, start, end, moving=plane.speed > 2.0)
@@ -1204,10 +1220,7 @@ class App:
         """Fly ``plane_type`` from now on (also in later sessions)."""
         self.profile.aircraft = plane_type.name
         self.audio.set_engine(plane_type.engine_note)
-        try:
-            self.store.save_profile(self.profile)
-        except OSError:
-            self.show_toast("COULD NOT SAVE")
+        self.save_profile()
 
     def change_aircraft(self) -> None:
         """Pause menu: swap to the next type, only standing still on a runway."""
@@ -1226,15 +1239,92 @@ class App:
     def on_runway(self, x: float, y: float) -> bool:
         return self.world.generator.airfields.runway_at(x, y) is not None
 
+    # --- traffic ------------------------------------------------------------
+
+    def update_traffic(self) -> None:
+        """Where the other aircraft near the camera are now (none in a race)."""
+        if not self.profile.traffic or self.race is not None:
+            self.flights = []
+            return
+        cam = self.camera
+        self.flights_before = {f.ident: f.position for f in self.flights}
+        self.flights = self.traffic.flights(cam.x, cam.y, self.time)
+
+    def check_traffic(self, start: np.ndarray) -> None:
+        """Collide with other aircraft, and note close shaves. ``start`` is where
+        the plane was a frame ago."""
+        plane = self.aircraft
+        if plane.state is not FlightState.FLYING:
+            return
+        here = np.array([plane.x, plane.y, plane.altitude])
+        for flight in self.flights:
+            other = flight.position
+            before = self.flights_before.get(flight.ident, other)
+            gap = closest_approach(here, other, start, before)
+            span, other_span = self.plane_type.span, TYPES[flight.kind].span
+            if midair(gap, span, other_span, config.MIDAIR_DISTANCE):
+                plane.crash("MIDAIR COLLISION")
+                return
+            # A near miss is only one once the two are drawing apart again.
+            closest = min(self.closest.get(flight.ident, math.inf), gap)
+            self.closest[flight.ident] = closest
+            passed = gap > closest + 1.0
+            near = closest < config.NEAR_MISS_DISTANCE
+            if near and passed and flight.ident not in self.near_misses:
+                self.near_misses.add(flight.ident)
+                self.events.emit(EventKind.NEAR_MISS, here, "NEAR MISS!")
+                self.show_toast("NEAR MISS!")
+
+    def draw_traffic(self) -> None:
+        """Other aircraft, with navigation lights at dusk and night."""
+        lights = palette.LIGHTINGS[self.lighting] is not palette.DAY
+        for flight in self.flights:
+            plane_type = TYPES[flight.kind]
+            draw_aircraft(
+                self.type_views[flight.kind],
+                TRANSPARENT,
+                flight.position,
+                flight.forward,
+                flight.up,
+                self.camera,
+                self.renderer,
+                plane_type.span,
+            )
+            if lights:
+                self.draw_nav_lights(flight, plane_type.span)
+
+    def draw_nav_lights(self, flight: Flight, span: float) -> None:
+        """Red on the left wing tip, green on the right, a white flash at the tail."""
+        right = np.cross(flight.forward, flight.up)
+        tips = [
+            (flight.position - right * span / 2, pyxel.COLOR_RED),
+            (flight.position + right * span / 2, pyxel.COLOR_LIME),
+        ]
+        if self.time % 1.0 < 0.15:
+            tips.append(
+                (flight.position - flight.forward * span / 2, pyxel.COLOR_WHITE)
+            )
+        points = np.array([p for p, _ in tips])
+        sx, sy, depth = project_points(self.camera, points, self.renderer.focal, W, H)
+        seen = (depth > 1.0) & in_front_of_terrain(
+            self.renderer, self.camera, points, sx, sy
+        )
+        for (_, color), x, y, ok in zip(tips, sx, sy, seen):
+            if ok:
+                pyxel.pset(x, y, color)
+
+    def save_profile(self) -> None:
+        try:
+            self.store.save_profile(self.profile)
+        except OSError:
+            self.show_toast("COULD NOT SAVE")
+
     def toggle_fuel(self) -> None:
         """Pause menu: fuel on (it runs out) or off (it never does)."""
         self.profile.fuel = not self.profile.fuel
         self.aircraft.uses_fuel = self.profile.fuel
         self.aircraft.fuel = 1.0
-        try:
-            self.store.save_profile(self.profile)
-        except OSError:
-            self.show_toast("COULD NOT SAVE")
+        self.save_profile()
 
     def refuel(self) -> None:
         """Fill the tank while standing still on a runway."""
@@ -1445,6 +1535,8 @@ class App:
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
         if chase and not self.ghost and self.mode is Mode.FLYING:
             self.draw_plane()
+        if self.mode is not Mode.REPLAY:  # traffic is at the live time
+            self.draw_traffic()
         self.draw_rain()
         if self.mode in (Mode.PHOTO, Mode.REPLAY):
             return
@@ -1453,7 +1545,9 @@ class App:
                 return
             case HudMode.MINIMAP:
                 self.hud.minimap(
-                    self.aircraft if not self.ghost else self.camera, self.world
+                    self.aircraft if not self.ghost else self.camera,
+                    self.world,
+                    [flight.position for flight in self.flights],
                 )
                 return
         if self.ghost:
@@ -1467,6 +1561,7 @@ class App:
             target=None if self.race else self.target_field,
             wind=self.wind,
             turbulence=self.turbulence,
+            traffic=[flight.position for flight in self.flights],
         )
         if self.race:
             ring = self.race.course.rings[self.race.next_ring]

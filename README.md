@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8f klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna, floderna och broarna är klara, och kvar är trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8g klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna, floderna, broarna och trafiken är klara, och kvar är utmärkelser.
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, flygplan (byts stillastående på en bana), fotoläge, repris, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, flygplan (byts stillastående på en bana), trafik av/på, fotoläge, repris, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Välj rad: start (i luften eller på närmaste bana), flygplan eller seed |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -265,6 +265,7 @@ pyxel-flight-sim/
 │       │   ├── events.py      # händelselogg: krasch, landning, ring
 │       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
 │       │   ├── planes.py      # flygplanstyper: TRAINER, STUNT, CARGO, SEAPLANE
+│       │   ├── traffic.py     # trafik mellan flygfälten: rutter, tidtabell, kollision
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
@@ -286,6 +287,7 @@ pyxel-flight-sim/
     ├── test_planes.py         # typernas karaktär, sjöflygplan på vatten och land, sprites, vrak
     ├── test_rivers.py         # långa floder med vatten, bara nedåt, slut i fjällen, kostnad, vrak
     ├── test_bridges.py        # placering, fri höjd, kollision, passage, klippning, fart
+    ├── test_traffic.py        # rutter bana till bana, frigång, lutning, tidtabell, kollision
     └── conftest.py            # gemensamt headless Pyxel-fönster för tester som ritar
 ```
 
@@ -1086,7 +1088,7 @@ Målet är att floderna ska få broar som man kan flyga under, som en utmaning o
   - Två broar nära samma by kan få samma namn.
   - Planet i jaktvyn ritas alltid efter broarna, så om bron ligger mellan kameran och planet hamnar planet framför däcket.
 
-#### 8g – Trafik mellan flygfälten *(stor)*
+#### 8g – Trafik mellan flygfälten ✅
 
 Målet är att världen ska kännas befolkad även i luften.
 
@@ -1103,6 +1105,34 @@ Målet är att världen ska kännas befolkad även i luften.
 - **Av eller på:** *TRAFFIC: ON/OFF* i pausmenyn, sparat i profilen. Under tidslopp är trafiken av.
 
 **Tester:** att tidtabellen är deterministisk och inte beror på i vilken ordning fält efterfrågas, att lägena är kontinuerliga i tiden (inga hopp över bitgränser), att rutterna går fria från terrängen med minst 100 enheters marginal i stickprov, att kollisionen fungerar och att trafikens beräkning tar högst 1 ms per bildruta med 8 plan. **Risk:** rutter genom berg eller orimliga svängar. Det mildras med höjdmarginalen, en största sväng per sekund och att fält som ligger för långt ifrån varandra eller har för hög terräng mellan sig inte paras ihop.
+
+**Resultat:**
+- **Linjer och tidtabell** ([sim/traffic.py](src/flightsim/sim/traffic.py)):
+  - Flygfält som ligger 1,5–4,5 km isär får en linje i 75 % av fallen. Paret och seed avgör, oberoende av i vilken ordning fälten efterfrågas.
+  - Varje linje har en period på 100–220 s och en fas. Avgångarna går åt båda hållen, förskjutna en halv period.
+  - Ett plans läge vid speltiden *t* är en uppslagning i rutten, så trafiken simuleras inte och hoppar inte. Typen (8d) slumpas per flygning.
+  - I snitt är 0,6–1,5 plan inom 3 km, som mest 2–4.
+- **Rutter:** starten görs från den banände och landningen åt det håll som ger kortast fungerande väg (alla fyra kombinationer provas).
+  - Sedd ovanifrån: startrullning 250 enheter, rak stigning 500 enheter, en kurva (radie 600) in mot en punkt 900 enheter ut på andra banans förlängda centrumlinje, rak inflygning och 200 enheters landningsrullning.
+  - Höjdprofilen är den lägsta som aldrig lutar mer än 20 % och håller sig över terrängen med minst 30 enheter nära banorna, växande till 150 enheter längre ut. Den räknas med två svep över de nödvändiga höjderna.
+  - Över slätt land blir det stigning, marsch och nedstigning, och över berg en profil som följer dem. Går det inte underkänns paret: först med 8 % lutning (då hann ingen rutt upp), sedan med 15 % och bara en riktning (då stoppade kullar bortom banänden de flesta).
+  - En rutt tar ~4,5 ms att lägga ut, med alla fyra varianternas terräng i ett enda anrop. Det görs en rutt per bildruta, så att spelet inte hackar när man kommer in i ett nytt område. Att hitta planen nära kameran tar ~0,5 ms per bildruta.
+- **Ritning:** högst 8 plan inom 3 km ritas med `draw_aircraft` i sin typs färger och storlek. De bankar i kurvor (efter svänghastigheten) och står plant på marken. I skymning och natt har de röd och grön lanterna och en vit blixt vid stjärten. I repriser ritas ingen trafik, eftersom den skulle visa nuet.
+- **Säkerhet:**
+  - *TRAFFIC* blinkar när ett plan är inom 400 enheter och ±100 i höjd. Minikartan visar trafiken som prickar, gula när de är nära i höjd, ritade över den egna symbolen.
+  - Kollision gäller inom 70 % av halva spännvidderna adderade, ger *MIDAIR COLLISION* och kontrolleras längs båda planens väg under bildrutan. Mötande plan närmar sig ~6 enheter per bildruta och kunde annars passera rakt igenom varandra (upptäckt i fönstret).
+  - Ett nära möte (under 30 enheter) ger *NEAR MISS!* och `EventKind.NEAR_MISS` först när planen har passerat varandra. Annars visades det strax före en krock.
+- **Av eller på:** *TRAFFIC: ON/OFF* i pausmenyn, sparat i profilen och på från början. Under tidslopp är trafiken av.
+- **Tester:** 9 nya (totalt 261):
+  - Rutterna: att de finns och inte beror på ordningen, att de går från bana till bana med rätt höjd, att de håller frigången och lutningen, och att planen rör sig mjukt med enhetsvektorer.
+  - Tidtabellen: att den är fast i speltid, och att rutter byggs några per bildruta.
+  - Kollision: kollisionsregeln, att mötande plan inte kan passera igenom varandra, och tidsåtgången.
+- **Provkört i riktigt fönster:**
+  - Bakom och vid sidan av ett trafikplan på väg mellan fält 838 och 657 syntes *TRAFFIC* och planet, och i skymning lanternorna och stjärtblixten (fotoläget).
+  - Ett möte rakt framifrån gav *MIDAIR COLLISION* med kraschvy och vrak. Det avslöjade att kollisionen först låg utanför `fly()`, så vraket aldrig skapades och nästa bildruta kraschade. En passage på 18 enheter gav *NEAR MISS!*.
+- **Inte gjort:**
+  - Ingen *RUNWAY OCCUPIED* (valfritt i planen). Trafikplan på banan är inte heller hinder.
+  - Trafiken syns inte på stora kartan.
 
 #### 8h – Utmärkelser *(medel, gör sist)*
 

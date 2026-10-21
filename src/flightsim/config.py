@@ -72,5 +72,9 @@ REPLAY_RELOAD = 2.0  # camera jumps beyond this many times the finest level's re
 BRIDGE_DRAW_DISTANCE = 1500.0  # bridges further away are not drawn
 BRIDGE_SEARCH = 200.0  # bridges this close are checked for collisions and passes
 
+# Traffic.
+MIDAIR_DISTANCE = 0.7  # of the two planes' half-spans added: a collision
+NEAR_MISS_DISTANCE = 30.0  # closer than this without colliding: a near miss
+
 # Fuel.
 REFUEL_MAX_SPEED = 1.0  # the plane must stand (nearly) still to refuel

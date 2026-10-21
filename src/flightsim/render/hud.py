@@ -12,6 +12,7 @@ Layout (256x144):
 
 import math
 import time
+from collections.abc import Sequence
 from enum import Enum
 
 import numpy as np
@@ -39,6 +40,16 @@ MINIMAP_SIZE = 40
 MINIMAP_SCALE = 16.0  # world units per minimap pixel
 TURBULENCE_WARNING = 0.45  # turbulence (0..1) above which the HUD warns
 FUEL_LOW = 0.15  # share of a full tank below which the HUD warns
+TRAFFIC_RANGE = 400.0  # other aircraft closer than this (horizontally)...
+TRAFFIC_HEIGHT = 100.0  # ...and this (vertically) set off the TRAFFIC warning
+
+
+def conflicting(plane: Aircraft, other: np.ndarray) -> bool:
+    """Whether an aircraft at ``other`` is close enough to warn about."""
+    if plane.state is not FlightState.FLYING:
+        return False
+    near = math.hypot(other[0] - plane.x, other[1] - plane.y) < TRAFFIC_RANGE
+    return near and abs(other[2] - plane.altitude) < TRAFFIC_HEIGHT
 
 
 def shadow_text(x: float, y: float, text: str, color: int) -> None:
@@ -85,14 +96,16 @@ class Hud:
         target: Airfield | None = None,
         wind: tuple[float, float] = (0.0, 0.0),
         turbulence: float = 0.0,
+        traffic: Sequence[np.ndarray] = (),
     ) -> None:
         """Draw all instruments. The pitch ladder and aircraft symbol only make
         sense looking out of the cockpit, so the chase view leaves them out.
         ``target`` is shown on the compass with its distance; ``wind`` is the
-        wind velocity and ``turbulence`` 0..1 how bumpy the air is."""
+        wind velocity and ``turbulence`` 0..1 how bumpy the air is; ``traffic``
+        holds the positions of other aircraft nearby."""
         ground = world.height_at(plane.x, plane.y)
         agl = plane.altitude - plane.settings.gear_height - ground
-        self.minimap(plane, world)  # writes pixels directly, so it goes first
+        self.minimap(plane, world, traffic)  # writes pixels directly: goes first
         if plane.state is FlightState.CRASHED:
             self.crash_message(plane)
             return
@@ -109,6 +122,10 @@ class Hud:
             self.fuel(plane)
         self.wind(plane, wind)
         self.messages(plane, agl)
+        if pyxel.frame_count // 8 % 2 == 0 and any(
+            conflicting(plane, other) for other in traffic
+        ):
+            centered_text(pyxel.height // 2 - 30, "TRAFFIC", CAUTION)
         if turbulence > TURBULENCE_WARNING and pyxel.frame_count // 8 % 2 == 0:
             centered_text(pyxel.height // 2 + 22, "TURBULENCE", CAUTION)
 
@@ -329,8 +346,14 @@ class Hud:
         )
         shadow_text(x + 7, y - 2, f"W{speed:3.0f}", HUD)
 
-    def minimap(self, plane: Aircraft, world: TerrainWorld) -> None:
-        """Terrain around the plane, rotated so the nose points up."""
+    def minimap(
+        self,
+        plane: Aircraft,
+        world: TerrainWorld,
+        traffic: Sequence[np.ndarray] = (),
+    ) -> None:
+        """Terrain around the plane, rotated so the nose points up, with other
+        aircraft as dots (yellow when close in height)."""
         size = MINIMAP_SIZE
         x0, y0 = pyxel.width - size - 4, pyxel.height - size - 4
         offsets = (np.arange(size) - size / 2 + 0.5) * MINIMAP_SCALE
@@ -350,6 +373,14 @@ class Hud:
         cx, cy = x0 + size // 2, y0 + size // 2
         pyxel.tri(cx, cy - 4, cx - 3, cy + 3, cx + 3, cy + 3, TEXT)
         pyxel.pset(cx, cy + 2, pyxel.COLOR_BLACK)
+        # Other aircraft over the plane symbol: close ones matter most.
+        for other in traffic:
+            dx, dy = other[0] - plane.x, other[1] - plane.y
+            px = cx + (dx * rx + dy * ry) / MINIMAP_SCALE
+            py = cy - (dx * fx + dy * fy) / MINIMAP_SCALE
+            if x0 <= px < x0 + size - 1 and y0 <= py < y0 + size - 1:
+                near = abs(other[2] - plane.altitude) < TRAFFIC_HEIGHT
+                pyxel.rect(px, py, 2, 2, CAUTION if near else pyxel.COLOR_WHITE)
         # North marker on the rim.
         angle = -plane.heading
         nx = cx + math.sin(angle) * (size / 2 - 4)
