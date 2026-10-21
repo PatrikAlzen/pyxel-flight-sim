@@ -16,6 +16,7 @@ class Biome(IntEnum):
     TAIGA = 7
     ROCK = 8
     SNOW = 9
+    RUNWAY = 10  # never chosen by classify(); painted on by airfields
 
     @property
     def label(self) -> str:

@@ -10,7 +10,7 @@ def test_palette_fits_pyxel():
 
 def test_palette_layout():
     colors = palette.colors()
-    last_terrain = palette.biome_color(Biome.SNOW, palette.SHADES - 1)
+    last_terrain = palette.biome_color(max(Biome), palette.SHADES - 1)
     assert last_terrain == palette.TERRAIN_BASE + palette.TERRAIN_COLORS - 1
     assert (
         palette.SKY_BASE

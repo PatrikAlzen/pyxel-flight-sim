@@ -6,12 +6,13 @@ same unit. Sea level is 0.
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from flightsim.render.palette import SHADES, biome_color
 from flightsim.terrain import shading
+from flightsim.terrain.airfields import Airfield, Airfields, AirfieldSettings
 from flightsim.terrain.biomes import Biome, classify
 from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
 
@@ -51,6 +52,8 @@ class TerrainSettings:
     # so slopes flipped between snow and rock where the levels meet on screen.
     biome_slope_span: float = 16.0
 
+    airfields: AirfieldSettings = field(default_factory=AirfieldSettings)
+
 
 @dataclass
 class TerrainSample:
@@ -82,9 +85,19 @@ class TerrainGenerator:
         self._hills = FractalNoise(seed + 6, octaves=4)
         self._moisture = FractalNoise(seed + 7, octaves=3)
         self._jitter = FractalNoise(seed + 8, octaves=2)
+        self.airfields = Airfields(
+            seed,
+            self.natural_elevation,
+            self.settings.sea_level,
+            self.settings.airfields,
+        )
 
     def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Terrain height at world coordinates, including the sea floor."""
+        return self.airfields.flatten(x, y, self.natural_elevation(x, y))
+
+    def natural_elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Terrain height before airfields level the ground."""
         s = self.settings
         cx, cy = domain_warp(
             np.asarray(x, dtype=np.float64) / s.continent_period,
@@ -128,6 +141,13 @@ class TerrainGenerator:
         )
 
         return s.sea_level + base + mountains + hills
+
+    def _paint_runways(
+        self, x: np.ndarray, y: np.ndarray, biome: np.ndarray, shade: np.ndarray
+    ) -> None:
+        """Paint asphalt and markings over the cells of any runway in the grid."""
+        for airfield in self.airfields.overlapping(x.min(), y.min(), x.max(), y.max()):
+            _paint(airfield, x, y, biome, shade)
 
     def moisture(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Moisture in [0, 1]; drives the choice between desert, grass and forest."""
@@ -186,6 +206,7 @@ class TerrainGenerator:
         ix = gx[None, inner[1]].astype(np.int64)
         iy = gy[inner[0], None].astype(np.int64)
         shade = shading.quantize(light, SHADES, ix, iy)
+        self._paint_runways(inner_x, inner_y, biome, shade)
 
         return TerrainSample(
             x0=float(gx[reach] * step),
@@ -197,6 +218,24 @@ class TerrainGenerator:
             biome=biome,
             color=biome_color(biome, shade),
         )
+
+
+def _paint(
+    airfield: Airfield,
+    x: np.ndarray,
+    y: np.ndarray,
+    biome: np.ndarray,
+    shade: np.ndarray,
+) -> None:
+    x, y = np.broadcast_arrays(x, y)
+    runway = airfield.on_runway(x, y)
+    if runway.any():
+        biome[runway] = Biome.RUNWAY
+        # Asphalt with a sparse lighter fleck (a full checkerboard looked coarse
+        # close up), and the paint in the brightest shade.
+        cells = np.floor(x[runway]) * 3 + np.floor(y[runway]) * 5
+        shade[runway] = 1 + (cells % 4 == 0)
+        shade[airfield.markings(x, y)] = SHADES - 1
 
 
 def _where_needed(

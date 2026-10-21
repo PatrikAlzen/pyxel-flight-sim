@@ -18,6 +18,7 @@ import pyxel
 from flightsim.render.framebuffer import screen_array
 from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 from flightsim.sim.camera import Camera
+from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.world import TerrainWorld
 
 HUD = pyxel.COLOR_LIME
@@ -59,10 +60,16 @@ class Hud:
         self.respawn_delay = respawn_delay
 
     def draw(
-        self, plane: Aircraft, camera: Camera, world: TerrainWorld, cockpit: bool = True
+        self,
+        plane: Aircraft,
+        camera: Camera,
+        world: TerrainWorld,
+        cockpit: bool = True,
+        target: Airfield | None = None,
     ) -> None:
         """Draw all instruments. The pitch ladder and aircraft symbol only make
-        sense looking out of the cockpit, so the chase view leaves them out."""
+        sense looking out of the cockpit, so the chase view leaves them out.
+        ``target`` is shown on the compass with its distance."""
         ground = world.height_at(plane.x, plane.y)
         agl = plane.altitude - plane.settings.gear_height - ground
         self.minimap(plane, world)  # writes pixels directly, so it goes first
@@ -73,6 +80,8 @@ class Hud:
             self.pitch_ladder(camera)
             self.aircraft_symbol()
         self.compass(plane.heading)
+        if target is not None:
+            self.waypoint(plane, target)
         self.speed_tape(plane)
         self.altitude_tape(plane, agl)
         self.throttle(plane.throttle)
@@ -161,6 +170,21 @@ class Hud:
         pyxel.rectb(cx - 7, top + 12, 15, 8, HUD)
         pyxel.text(cx - 5, top + 14, label, TEXT)
         pyxel.tri(cx - 2, top + 12, cx + 2, top + 12, cx, top + 10, HUD)
+
+    def waypoint(self, plane: Aircraft, field: Airfield) -> None:
+        """A marker on the compass band towards ``field``, plus its number and distance."""
+        cx, half, top = pyxel.width // 2, 60, 2
+        dx, dy = field.x - plane.x, field.y - plane.y
+        bearing = math.degrees(math.atan2(dx, -dy))
+        relative = (bearing - math.degrees(plane.heading) + 180) % 360 - 180
+        x = cx + max(-half + 3, min(half - 3, relative))
+        pyxel.tri(x - 3, top + 10, x + 3, top + 10, x, top + 6, CAUTION)
+        if abs(relative) > half - 3:  # off the band: point the way to turn
+            arrow = "<" if relative < 0 else ">"
+            pyxel.text(x - 1 + (-6 if relative < 0 else 4), top + 3, arrow, CAUTION)
+        distance = math.hypot(dx, dy)
+        away = f"{distance / 1000:.1f}K" if distance >= 1000 else f"{distance:.0f}"
+        shadow_text(cx + 12, top + 14, f"FLD {field.number} {away}", CAUTION)
 
     def _tape(
         self,

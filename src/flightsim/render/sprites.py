@@ -53,6 +53,36 @@ PLANE_WRECK = [
     "...........kkk...........",
 ]
 
+# An airfield hangar: curved roof, open door.
+HANGAR = [
+    "........kkkkkkkk........",
+    ".....kkkggggggggkkk.....",
+    "...kkgggggwwwwgggggkk...",
+    "..kgggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
+    ".kgggkkkkkkkkkkkkkkgggk.",
+    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kkkkkkkkkkkkkkkkkkkkkk.",
+]
+
+# A windsock on its pole.
+WINDSOCK = [
+    "kowowo..",
+    "kowow...",
+    "k.......",
+    "k.......",
+    "k.......",
+    "k.......",
+    "k.......",
+    "k.......",
+    "k.......",
+    "k.......",
+]
+
 
 def make_image(rows: list[str]) -> pyxel.Image:
     """Pyxel image of a text sprite; blit it with ``colkey=TRANSPARENT``."""

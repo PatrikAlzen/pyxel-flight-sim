@@ -211,6 +211,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
 | `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
+| `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
 | `F1` | – | Debug-överlägg (FPS, tiles, koordinater, flygtillstånd) |
 | `Esc` / `Q` på startskärmen | – | Avsluta |
@@ -237,6 +238,7 @@ pyxel-flight-sim/
 │       │   ├── noise.py       # vektoriserat gradientbrus, fbm, ridged, domain warp
 │       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
+│       │   ├── airfields.py   # flygfält: placering, utjämnad mark, banmålning, landningsbetyg
 │       │   ├── world.py       # LOD-nivåer som ringbuffertar som följer kameran, arbetsprocesser
 │       │   └── shading.py     # lutningsbaserad ljussättning
 │       ├── render/
@@ -523,7 +525,7 @@ Målet är att det man gjort i en värld finns kvar till nästa gång.
 - **Tester:** 10 nya (totalt 121): sparning och läsning tillbaka, att ingen temporär fil blir kvar, äldre format, okända fält, tre sorters trasiga filer (flyttas undan, världen blir tom), platsnumrering och tak samt sammanfattningen.
 - **Provkörd i riktigt fönster över två sessioner** med en tillfällig datakatalog: session 1 sparade två platser och kraschade. I session 2 visade startskärmen det sparade, vraket låg kvar, *PLACES* listade platserna, hoppet till PLACE 2 gick via laddningsskärmen och kartan visade både vrak och platser.
 
-#### 7b – Flygfält och landningsbanor *(medel)*
+#### 7b – Flygfält och landningsbanor ✅
 
 Målet är riktiga platser att landa på, som också fungerar som start- och mittpunkter för annat innehåll.
 
@@ -538,6 +540,34 @@ Målet är riktiga platser att landa på, som också fungerar som start- och mit
 - **Start:** man kan välja att börja på marken på närmaste flygfält i stället för i luften.
 
 **Tester:** placeringen är densamma för samma seed och oberoende av besöksordning, banan är plan inom tolerans, och tiles som korsar en bana är sömlösa (befintligt sömtest med en bana i rutan). Ett test landar på en bana och ger betyg. **Risk:** den utjämnade marken kan ge synliga kanter, så övergångszonen måste vara bred nog.
+
+**Resultat:**
+- **Placering** ([terrain/airfields.py](src/flightsim/terrain/airfields.py)):
+  - Celler om 2048 × 2048 enheter. Varje cell får egna slumptal från `(seed, cx, cy)`, så resultatet beror inte på i vilken ordning cellerna besöks eller vilken process som räknar (testat).
+  - 85 % av cellerna provar 8 punkter × 6 riktningar mot den *naturliga* terrängen. Den plattaste godkänns om höjdskillnaden över banan med kant är högst 12 och banan ligger 3–80 enheter över havet. Det ger flygfält i cirka 28–38 % av cellerna (uppmätt för fyra seeds), och det närmaste fältet ligger 1–3 km från start.
+  - Placeringen kostar ~2 ms per cell, en gång (cachad).
+- **Utjämnad mark:** `TerrainGenerator.elevation` blandar mot banans höjd med en mjuk mask: banan plus 14 enheters kant är helt plan, och därefter följer 70 enheters övergång. Hela zonen ligger inne i cellen, så varje tile behöver bara titta på cellerna den överlappar. Banan är exakt plan (testat) och tiles som skär en bana är sömlösa (testat). `natural_elevation` är den orörda terrängen.
+- **Utseende:**
+  - Nytt biom `RUNWAY` med asfaltsramp (paletten använder nu 222 av 256).
+  - Streckad mittlinje, kantlinjer och tröskelmarkeringar ritas i världskoordinater.
+  - Asfalten har en gles ljusare nyans. Ett helt rutmönster blev för grovt nära kameran.
+  - Hangar och vindstrut är 3D-sprites. `draw_wrecks` är generaliserad till `draw_billboards` med storlek från världsmått.
+  - Byggnadernas markhöjd räknas en gång per fält.
+- **Spel:**
+  - En sättning på en bana ger *FIELD 657: FIRM (3.7 SINK, 0 OFF CENTRE)*. Betyget sätts efter sjunkhastighet: BUTTER < 1,5 < SMOOTH < 3,5 < FIRM < 6 < HARD.
+  - Ett nytt fält ger *NEW* och sparas i `visited` i sparfilen.
+  - `Aircraft.touchdown_sink` sparar sjunkhastigheten vid sättningen.
+- **HUD:** närmaste fält (inom 3 celler) markeras med en gul triangel i kompassbandet, eller med en pil vid kanten om det ligger utanför, och med *FLD 657 2.9K* bredvid kursen.
+- **Karta:** banorna ritas skalenligt (minst några pixlar) med nummer. Besökta fält är gröna, övriga vita.
+- **Start på bana:** `↑/↓` på startskärmen väljer *START IN THE AIR* eller *START ON A RUNWAY*. Planet parkeras (`Aircraft.park`) vid närmaste fälts bantröskel med motorn på tomgång.
+- **Tester:** 16 nya (totalt 137):
+  - Placering: att den är deterministisk och oberoende av ordning, tätheten, att banan är plan, torr och låg, att zonen ligger inne i cellen och att tiles är sömlösa över en bana.
+  - Bana: målning, `runway_at`, `nearest`, att inga fält placeras i kuperad terräng och landningsbetygen.
+  - Flygplan: start från parkerat läge och att sjunkhastigheten vid sättning sparas.
+  - Sparning: besökta fält.
+- **Provkörd i riktigt fönster:** start på bana, lyft, en inflygning som landade på fält 657 och gav *NEW FIELD 657: FIRM*, och kartan med två banor. Ritningen tog i snitt ~18–22 ms per bildruta.
+- **Rättat efteråt: hangar och vindstrut blinkade.** Testet som döljer sprites bakom terräng gjordes vid spritens fotpunkt. När marken ses snett räcker ett litet höjdfel mellan fotpunkten (exakt generatorhöjd) och den ritade marken (lagrad, grövre långt bort) för att terrängträffen i den pixeln hamnar många enheter närmare. Under en inflygning döljdes hangaren därför i ungefär halva bildrutorna och växlade synlighet 43 gånger. Nu testas spritens mitt (`billboard_visible`) och marginalen växer med avståndet (3 + 2 %). Växlingarna gick från 43 till 3 för hangaren och från 26 till 2 för vindstruten, och de som återstår är riktiga, när den försvinner bakom en kulle. Det kontrollerades mot en siktlinje genom terrängen, med överensstämmelse i 59 av 60 lägen. Ett regressionstest kontrollerar att en sprite med fotpunkten en halv enhet fel syns i varje bildruta men döljs bakom en vägg. Den nya marginalen gäller även partiklarna.
+- **Inte gjort:** bränsle (valfritt i planen). Vindstruten visar ännu ingen vindriktning, vilket kommer med vädret i 7e.
 
 #### 7c – Ringar och tidslopp *(medel, bygger på 7b)*
 

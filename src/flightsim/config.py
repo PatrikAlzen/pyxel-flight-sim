@@ -33,6 +33,13 @@ WRECK_SMOKE_DISTANCE = 1500.0  # old wrecks this close smoulder, visible from af
 SAVE_VENDOR = "pyxel-flight-sim"
 PLACE_MIN_CLEARANCE = 20.0  # a saved place never drops the plane closer to the ground
 
+# Airfields.
+FIELD_SEARCH_RINGS = 3  # cells searched around the plane for the nearest field
+RUNWAY_START_OFFSET = 20.0  # starting on a runway: this far in from its end
+PROP_DRAW_DISTANCE = 900.0  # hangars and windsocks further away are not drawn
+HANGAR_WIDTH = 36.0  # world units
+WINDSOCK_WIDTH = 4.0
+
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame
 GHOST_FAST = 5.0  # speed multiplier while SHIFT is held

@@ -114,6 +114,8 @@ class Aircraft:
     # Seconds since the last crash or respawn.
     state_time: float = 0.0
     vertical_speed: float = 0.0
+    # Sink rate at the last touchdown (positive = descending), for grading landings.
+    touchdown_sink: float = 0.0
     settings: AircraftSettings = AircraftSettings()
 
     # Orientation: unit vectors along the nose and out of the canopy.
@@ -194,6 +196,19 @@ class Aircraft:
         self.pitch_rate = self.roll_rate = 0.0
         self.sink = self.vertical_speed = 0.0
         self.state = FlightState.FLYING
+        self.crash_reason = ""
+        self.state_time = 0.0
+
+    def park(self, x: float, y: float, heading: float, ground: Ground) -> None:
+        """Stand still on the ground at (x, y), engine idle, ready to take off."""
+        s = self.settings
+        self.x, self.y = x, y
+        self.forward, _, self.up = euler_to_basis(heading, 0.0, 0.0)
+        self.altitude = ground(x, y) + s.gear_height
+        self.speed = self.throttle = 0.0
+        self.pitch_rate = self.roll_rate = 0.0
+        self.sink = self.vertical_speed = 0.0
+        self.state = FlightState.LANDED
         self.crash_reason = ""
         self.state_time = 0.0
 
@@ -328,6 +343,8 @@ class Aircraft:
             return
         if self.state is FlightState.FLYING:
             self.state = FlightState.LANDED
+            self.state_time = 0.0
+            self.touchdown_sink = -self.vertical_speed
             self.forward, _, self.up = euler_to_basis(
                 self.heading, max(self.pitch, 0.0), 0.0
             )

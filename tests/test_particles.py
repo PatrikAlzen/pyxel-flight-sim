@@ -97,3 +97,30 @@ def test_old_wrecks_smoulder_thinly():
     assert 10 < len(p) < 40  # a wisp, not a fire: ~2.5 per second each
     assert np.all(p.kind == Kind.SMOKE)
     assert p.position[:, 2].max() > 30  # and it rises high
+
+
+def test_billboard_on_the_ground_does_not_blink_at_a_shallow_angle():
+    """A sprite whose foot is a little off the drawn ground must stay visible
+    as the camera moves; it used to vanish every few frames."""
+    from flightsim.render.effects import billboard_visible
+    from flightsim.render.voxel import RenderSettings, VoxelRenderer
+    from flightsim.terrain.world import TerrainLevel
+
+    level = TerrainLevel.empty(1024, 1.0)
+    level.heights[:] = 10.0
+    renderer = VoxelRenderer(256, 144, RenderSettings(z_far=600))
+    out = np.zeros((144, 256), dtype=np.uint8)
+    sprite = np.array([[0.0, -300.0, 9.5]])  # foot half a unit below the ground
+    seen = []
+    for step in range(30):
+        camera = Camera(x=0.0, y=-step * 1.7, altitude=40.0, pitch=-0.1)
+        renderer.render(out, [level], camera)
+        seen.append(bool(billboard_visible(renderer, camera, sprite, height=12.0)[0]))
+    assert all(seen)
+
+    # Behind a wall it is hidden.
+    wall = level.indices(0, np.arange(-120, -110))[0]
+    level.heights[wall, :] = 200.0
+    camera = Camera(x=0.0, y=0.0, altitude=40.0)
+    renderer.render(out, [level], camera)
+    assert not billboard_visible(renderer, camera, sprite, height=12.0)[0]

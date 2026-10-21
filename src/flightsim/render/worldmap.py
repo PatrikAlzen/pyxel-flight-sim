@@ -15,6 +15,7 @@ import pyxel
 from flightsim.persist import Place
 from flightsim.render.framebuffer import screen_array
 from flightsim.render.hud import CAUTION, HUD, TEXT, shadow_text
+from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.generator import TerrainGenerator
 
 ZOOMS = [4, 8, 16, 32, 64]  # world units per pixel
@@ -44,8 +45,13 @@ class WorldMap:
         """Fill the screen with the map centred near (cx, cy)."""
         screen_array()[:] = self.image(cx, cy, step, pyxel.width, pyxel.height)
 
+    @property
+    def step(self) -> float:
+        """World units per pixel of the picture last drawn."""
+        return self._key[2] if self._key else 1
+
     def to_screen(self, x: float, y: float) -> tuple[float, float]:
-        step = self._key[2] if self._key else 1
+        step = self.step
         return (x - self.origin[0]) / step, (y - self.origin[1]) / step
 
 
@@ -68,6 +74,17 @@ def draw_wreck_marker(x: float, y: float) -> None:
         pyxel.line(x - 2 + dx, y + 2 + dy, x + 2 + dx, y - 2 + dy, color)
 
 
+def draw_runway_marker(world_map: WorldMap, field: Airfield, visited: bool) -> None:
+    """A runway drawn to scale (at least a few pixels long), with its number."""
+    half = max(field.length / 2, 3 * world_map.step)
+    x0, y0 = world_map.to_screen(*field.point(-half))
+    x1, y1 = world_map.to_screen(*field.point(half))
+    color = pyxel.COLOR_LIME if visited else pyxel.COLOR_WHITE
+    pyxel.line(x0 + 1, y0 + 1, x1 + 1, y1 + 1, pyxel.COLOR_BLACK)
+    pyxel.line(x0, y0, x1, y1, color)
+    shadow_text(max(x0, x1) + 3, (y0 + y1) / 2 - 2, str(field.number), color)
+
+
 def draw_place_marker(x: float, y: float, name: str) -> None:
     """A saved place: a small square with the place's number beside it."""
     pyxel.rect(x - 2, y - 2, 5, 5, pyxel.COLOR_BLACK)
@@ -83,10 +100,14 @@ def draw_map_overlay(
     step: float,
     wrecks: np.ndarray | None = None,
     places: Sequence[Place] = (),
+    airfields: Sequence[Airfield] = (),
+    visited: set[int] = frozenset(),
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
     bar and help."""
     world_map.draw(x, y, step)
+    for field in airfields:
+        draw_runway_marker(world_map, field, field.number in visited)
     if wrecks is not None:
         for wx, wy, _ in wrecks:
             draw_wreck_marker(*world_map.to_screen(wx, wy))

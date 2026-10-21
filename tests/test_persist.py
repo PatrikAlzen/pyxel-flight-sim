@@ -80,3 +80,9 @@ def test_summary_counts_without_loading(store):
     store.save(world)
     assert store.summary(3) == (2, 1)
     assert store.summary(4) == (0, 0)
+
+
+def test_visited_airfields_round_trip(store):
+    world = WorldSave(11, visited=[389, 512])
+    store.save(world)
+    assert store.load(11).visited == [389, 512]

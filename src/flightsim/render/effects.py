@@ -17,8 +17,8 @@ from flightsim.terrain.biomes import Biome
 # The wreck sprite is drawn at full size when this far from the camera.
 WRECK_FULL_SIZE_DISTANCE = 40.0
 WRECK_TILT = -14.0  # degrees: lying on its side
-# Below this scale (about three pixels wide) a wreck is not worth drawing.
-WRECK_MIN_SCALE = 0.12
+# Below this scale (about three pixels wide) a sprite is not worth drawing.
+MIN_SCALE = 0.12
 
 
 def project_points(
@@ -41,13 +41,34 @@ def in_front_of_terrain(
     sx: np.ndarray,
     sy: np.ndarray,
 ) -> np.ndarray:
-    """Whether each point is nearer than the terrain drawn at its screen position."""
+    """Whether each point is nearer than the terrain drawn at its screen position.
+
+    With some slack, growing with distance: a point on the ground should not
+    vanish into it, and the terrain kept for rendering gets coarser further out.
+    """
     h, w = renderer.pixel_distance.shape
     col = np.clip(sx.astype(np.int64), 0, w - 1)
     row = np.clip(sy.astype(np.int64), 0, h - 1)
     horizontal = np.hypot(points[:, 0] - camera.x, points[:, 1] - camera.y)
-    # A little slack: a particle sitting on the ground should not vanish into it.
-    return horizontal <= renderer.pixel_distance[row, col] + 3.0
+    slack = 3.0 + 0.02 * horizontal
+    return horizontal <= renderer.pixel_distance[row, col] + slack
+
+
+def billboard_visible(
+    renderer: VoxelRenderer, camera: Camera, positions: np.ndarray, height: float
+) -> np.ndarray:
+    """Whether sprites ``height`` world units tall standing at ``positions`` are
+    in front of the terrain.
+
+    Tested at the sprite's middle, not its foot: seen at a shallow angle, a
+    tiny height difference between the foot and the drawn ground moves the
+    terrain hit at that pixel many units nearer, and the sprite would blink
+    in and out as the camera moves.
+    """
+    middle = positions + [0.0, 0.0, height / 2]
+    w, h = renderer.width, renderer.height
+    sx, sy, depth = project_points(camera, middle, renderer.focal, w, h)
+    return (depth > 1.0) & in_front_of_terrain(renderer, camera, middle, sx, sy)
 
 
 def smoke_color(fade: float) -> int:
@@ -107,31 +128,40 @@ def draw_particles(
     pyxel.dither(1.0)
 
 
-def draw_wrecks(
+def full_size_distance(sprite: pyxel.Image, world_width: float, focal: float) -> float:
+    """Distance at which ``sprite`` drawn 1:1 is ``world_width`` units wide."""
+    return world_width * focal / sprite.width
+
+
+def draw_billboards(
     sprite: pyxel.Image,
     colkey: int,
     positions: np.ndarray,
     camera: Camera,
     renderer: VoxelRenderer,
+    full_size: float,
+    tilt: float = 0.0,
 ) -> None:
-    """Wrecked planes lying at world points (rows of ``positions``).
+    """Sprites standing on world points (rows of ``positions``), facing the camera.
 
-    Each is scaled for its distance, hidden behind terrain and drawn far to
-    near. Wrecks too far away to be more than a couple of pixels are skipped.
-    Draw the particles first: flames start right at a burning wreck, and half
-    of them would otherwise be in front of it and hide it.
+    Each is drawn 1:1 at distance ``full_size`` and scaled for its own
+    distance, hidden behind terrain and drawn far to near. Sprites too far
+    away to be more than a couple of pixels are skipped. Draw particles first:
+    flames start right at a burning wreck, and half of them would otherwise be
+    in front of it and hide it.
     """
     if not len(positions):
         return
     w, h = renderer.width, renderer.height
     sx, sy, depth = project_points(camera, positions, renderer.focal, w, h)
-    scale = WRECK_FULL_SIZE_DISTANCE / np.where(depth > 0, depth, np.inf)
+    scale = full_size / np.where(depth > 0, depth, np.inf)
     size = sprite.width * scale
-    visible = (depth > 1.0) & (scale >= WRECK_MIN_SCALE)
+    visible = (depth > 1.0) & (scale >= MIN_SCALE)
     visible &= (sx > -size) & (sx < w + size) & (sy > -size) & (sy < h + size)
-    visible &= in_front_of_terrain(renderer, camera, positions, sx, sy)
+    height = sprite.height * full_size / renderer.focal  # world units
+    visible &= billboard_visible(renderer, camera, positions, height)
     for i in np.flatnonzero(visible)[np.argsort(-depth[visible])]:
-        k = min(2.0, float(scale[i]))
+        k = min(4.0, float(scale[i]))
         # Pyxel scales about the middle of the copied area; lift it so it rests
         # on the ground instead of being half buried.
         centre_y = float(sy[i]) - sprite.height * k / 2
@@ -144,6 +174,6 @@ def draw_wrecks(
             sprite.width,
             sprite.height,
             colkey,
-            rotate=WRECK_TILT,
+            rotate=tilt,
             scale=k,
         )

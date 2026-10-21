@@ -34,10 +34,23 @@ from flightsim.controls import Action, flight_controls, pressed
 from flightsim.persist import Place, SaveStore, WorldSave
 from flightsim.render import palette
 from flightsim.render.clouds import CloudLayer
-from flightsim.render.effects import draw_particles, draw_wrecks
+from flightsim.render.effects import (
+    WRECK_FULL_SIZE_DISTANCE,
+    WRECK_TILT,
+    draw_billboards,
+    draw_particles,
+    full_size_distance,
+)
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
-from flightsim.render.sprites import PLANE_REAR, PLANE_WRECK, TRANSPARENT, make_image
+from flightsim.render.sprites import (
+    HANGAR,
+    PLANE_REAR,
+    PLANE_WRECK,
+    TRANSPARENT,
+    WINDSOCK,
+    make_image,
+)
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.render.worldmap import (
     ZOOMS,
@@ -50,6 +63,7 @@ from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.sim.particles import Particles
 from flightsim.sim.wrecks import Wrecks
+from flightsim.terrain.airfields import Airfield, landing_report
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.world import TerrainWorld
 
@@ -131,6 +145,10 @@ class App:
         self.title_summary: tuple[int, tuple[int, int]] | None = None  # (seed, counts)
         # Where loading drops the plane: x, y, heading, altitude (None = default).
         self.spawn: tuple[float, float, float, float | None] = (0.0, 0.0, 0.0, None)
+        self.spawn_on_ground = False
+        self.start_on_runway = False  # chosen on the title screen
+        self.target_field: Airfield | None = None  # nearest airfield, for the HUD
+        self.field_props: dict[int, dict[str, np.ndarray]] = {}  # per field number
         self.toast = ""
         self.toast_until = 0.0
         self.map_zoom = ZOOMS.index(16)
@@ -153,6 +171,10 @@ class App:
         self.title_images = make_title_images(config.TITLE.upper())
         self.plane_sprite = make_image(PLANE_REAR)
         self.wreck_sprite = make_image(PLANE_WRECK)
+        self.prop_sprites = {
+            "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
+            "windsock": (make_image(WINDSOCK), config.WINDSOCK_WIDTH),
+        }
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
         pyxel.run(self.update, self.draw)
@@ -191,6 +213,9 @@ class App:
             self.seed = seed
             self.preview = WorldMap(TerrainGenerator(seed))
             self.audio.menu_move()
+        if pressed(Action.UP) or pressed(Action.DOWN):
+            self.start_on_runway = not self.start_on_runway
+            self.audio.menu_move()
         if pressed(Action.CONFIRM):
             self.audio.menu_confirm()
             self.title_summary = None
@@ -213,10 +238,27 @@ class App:
             self.wrecks.add(np.array(wreck))
         self.time = 0.0
         self.ghost = False
-        self.begin_loading(0.0, 0.0, 0.0)
+        self.field_props.clear()
+        self.target_field = None
+        field = (
+            self.world.generator.airfields.nearest(0.0, 0.0, config.FIELD_SEARCH_RINGS)
+            if self.start_on_runway
+            else None
+        )
+        if field is None:
+            self.begin_loading(0.0, 0.0, 0.0)
+        else:
+            # At the start of the runway, pointing down it.
+            x, y = field.point(-field.length / 2 + config.RUNWAY_START_OFFSET)
+            self.begin_loading(x, y, field.heading, on_ground=True)
 
     def begin_loading(
-        self, x: float, y: float, heading: float, altitude: float | None = None
+        self,
+        x: float,
+        y: float,
+        heading: float,
+        altitude: float | None = None,
+        on_ground: bool = False,
     ) -> None:
         """Show a progress bar while the terrain around (x, y) is generated.
 
@@ -224,6 +266,7 @@ class App:
         as the camera moves. The plane is placed there once everything is in.
         """
         self.spawn = (x, y, heading, altitude)
+        self.spawn_on_ground = on_ground
         self.world.update(x, y)
         self.load_total = max(1, self.world.pending)
         self.progress = 0.0
@@ -240,7 +283,13 @@ class App:
         pending = self.world.pending
         self.progress = 1 - pending / self.load_total
         if pending == 0:
-            self.place_aircraft(x, y, heading, altitude)
+            if self.spawn_on_ground:
+                self.aircraft.park(x, y, heading, self.world.height_at)
+                self.ghost = False
+                self.chase.reset()
+                self.follow_aircraft()
+            else:
+                self.place_aircraft(x, y, heading, altitude)
             self.mode = Mode.FLYING
 
     def place_aircraft(
@@ -273,6 +322,10 @@ class App:
             self.chase_view = not self.chase_view
             self.chase.reset()
         self.time += DT
+        if pyxel.frame_count % 10 == 0:
+            self.target_field = self.world.generator.airfields.nearest(
+                self.camera.x, self.camera.y, config.FIELD_SEARCH_RINGS
+            )
         self.particles.update(DT, self.clouds.settings.drift)
         cam = self.camera
         self.particles.smoulder(
@@ -415,12 +468,28 @@ class App:
         ):
             self.respawn_here()
         was_crashed = plane.state is FlightState.CRASHED
+        was_flying = plane.state is FlightState.FLYING
         plane.update(flight_controls(), DT, self.world.height_at)
+        if was_flying and plane.state is FlightState.LANDED:
+            self.touched_down()
         if plane.state is FlightState.CRASHED:
             if not was_crashed:
                 self.crashed()
             self.particles.burn(self.wrecks.latest + [0.0, 0.0, 3.0], DT)
         self.follow_aircraft()
+
+    def touched_down(self) -> None:
+        """Grade a landing if it was on a runway, and remember the airfield."""
+        plane = self.aircraft
+        field = self.world.generator.airfields.runway_at(plane.x, plane.y)
+        if field is None:
+            return
+        report = landing_report(field, plane.x, plane.y, plane.touchdown_sink)
+        if field.number not in self.saved.visited:
+            self.saved.visited.append(field.number)
+            self.persist()
+            report = "NEW " + report
+        self.show_toast(report)
 
     def crashed(self) -> None:
         """The moment of impact: leave a wreck on the ground and blow up."""
@@ -508,6 +577,8 @@ class App:
                     ZOOMS[self.map_zoom],
                     self.wrecks.positions,
                     self.saved.places,
+                    self.map_airfields(),
+                    set(self.saved.visited),
                 )
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
@@ -528,17 +599,66 @@ class App:
         )
         self.render_time.add(time.perf_counter() - start)
         draw_particles(self.particles, self.camera, self.renderer)
+        self.draw_airfield_props()
         nearby = self.wrecks.near(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
-        draw_wrecks(self.wreck_sprite, TRANSPARENT, nearby, self.camera, self.renderer)
+        draw_billboards(
+            self.wreck_sprite,
+            TRANSPARENT,
+            nearby,
+            self.camera,
+            self.renderer,
+            WRECK_FULL_SIZE_DISTANCE,
+            WRECK_TILT,
+        )
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
         if chase:
             self.draw_plane()
-        self.hud.draw(self.aircraft, self.camera, self.world, cockpit=not chase)
+        self.hud.draw(
+            self.aircraft,
+            self.camera,
+            self.world,
+            cockpit=not chase,
+            target=self.target_field,
+        )
+
+    def draw_airfield_props(self) -> None:
+        """Hangars and windsocks at the airfields around the camera."""
+        cam = self.camera
+        r = config.PROP_DRAW_DISTANCE
+        fields = self.world.generator.airfields.overlapping(
+            cam.x - r, cam.y - r, cam.x + r, cam.y + r
+        )
+        for field in fields:
+            for kind, positions in self.props_of(field).items():
+                sprite, width = self.prop_sprites[kind]
+                full = full_size_distance(sprite, width, self.renderer.focal)
+                draw_billboards(
+                    sprite, TRANSPARENT, positions, cam, self.renderer, full
+                )
+
+    def props_of(self, field: Airfield) -> dict[str, np.ndarray]:
+        """World positions of a field's buildings, on the ground (computed once)."""
+        if field.number not in self.field_props:
+            props: dict[str, list] = {}
+            elevation = self.world.generator.elevation
+            for kind, x, y in field.props():
+                z = float(elevation(np.array(x), np.array(y)))
+                props.setdefault(kind, []).append([x, y, z])
+            self.field_props[field.number] = {k: np.array(v) for k, v in props.items()}
+        return self.field_props[field.number]
+
+    def map_airfields(self) -> list[Airfield]:
+        """Airfields in and around the area the map shows."""
+        plane, step = self.aircraft, ZOOMS[self.map_zoom]
+        rx, ry = W / 2 * step, H / 2 * step
+        return self.world.generator.airfields.overlapping(
+            plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
+        )
 
     def draw_plane(self) -> None:
         """The aircraft sprite as seen from the chase camera."""
@@ -582,6 +702,9 @@ class App:
             saved = f"{plural(wrecks, 'WRECK')}, {plural(places, 'PLACE')}"
             centered_text(52, f"SAVED HERE: {saved}", TEXT)
         centered_text(H - 21, "LEFT/RIGHT CHANGE SEED   R RANDOM", HUD)
+        start = "ON A RUNWAY" if self.start_on_runway else "IN THE AIR"
+        shaded_rect(0, 62, W, 10)
+        centered_text(64, f"START {start}  (UP/DOWN)", pyxel.COLOR_LIGHT_BLUE)
         if pyxel.frame_count // 15 % 2 == 0:
             centered_text(H - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
 
