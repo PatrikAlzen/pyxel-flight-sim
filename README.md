@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8c klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna och bränslet är klara, och kvar är flygplanstyper, floder, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8d klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet och flygplanstyperna är klara, och kvar är floder, trafik och utmärkelser.
 
 ---
 
@@ -202,16 +202,16 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | Tangent | Gamepad | Funktion |
 |---|---|---|
 | `↑` / `↓` | Vänster spak Y | Tippa nos ned/upp (menyer: flytta markör) |
-| `←` / `→` | Vänster spak X | Rolla (startskärm: byt seed) |
+| `←` / `→` | Vänster spak X | Rolla (startskärm: ändra vald rad) |
 | `W` / `S` | `R1` / `L1` eller triggers | Öka/minska gas |
 | `A` / `D` | Höger spak X | Sidroder (på marken: styr) |
 | `B` | `B` | Hjulbromsar (på marken) |
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, fotoläge, repris, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), bränsle av/på, flygplan (byts stillastående på en bana), fotoläge, repris, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
-| `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
+| `↑` / `↓` på startskärmen | D-pad | Välj rad: start (i luften eller på närmaste bana), flygplan eller seed |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
 | `H` | Vänster spak (klick) | HUD-läge: full HUD → bara minikarta → ingen HUD |
 | `F1` | – | Debug-överlägg (FPS, tiles, koordinater, flygtillstånd) |
@@ -262,6 +262,7 @@ pyxel-flight-sim/
 │       │   ├── freecam.py     # fri kamera för fotoläget: kretsa runt planet eller flyg
 │       │   ├── events.py      # händelselogg: krasch, landning, ring
 │       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
+│       │   ├── planes.py      # flygplanstyper: TRAINER, STUNT, CARGO, SEAPLANE
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
@@ -279,7 +280,8 @@ pyxel-flight-sim/
     ├── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
     ├── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
     ├── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
-    └── test_fuel.py           # förbrukning, motorstopp, räckvidd, tankning, deadstick, profil
+    ├── test_fuel.py           # förbrukning, motorstopp, räckvidd, tankning, deadstick, profil
+    └── test_planes.py         # typernas karaktär, sjöflygplan på vatten och land, sprites, vrak
 ```
 
 ## Implementationsplan
@@ -909,7 +911,7 @@ Målet är att längre flygningar ska behöva planeras och att flygfälten ska b
 - **Provkört i riktigt fönster:** start på bana 657 med 40 % i tanken, tankning till *TANK FULL*, kartan med räckvidd, *FUEL LOW* vid 10 % i luften och *OUT OF FUEL - GLIDE* med svart mätare och stoppad motor. `profile.json` sparades med `"fuel": true`.
 - **Att justera:** med planens siffror blir räckvidden stor, ~90 km på full tank, medan flygfälten ligger ett par km isär. Bränslet spelar därför mest roll på långa utforskningsturer, och räckviddscirkeln hamnar utanför kartan även vid lägsta zoom. En mindre tank (`full_burn`) gör det svårare.
 
-#### 8d – Fler flygplanstyper *(medel)*
+#### 8d – Fler flygplanstyper ✅
 
 Målet är att planen ska kännas olika och passa olika sorters flygning.
 
@@ -929,6 +931,41 @@ Målet är att planen ska kännas olika och passa olika sorters flygning.
 - **Balans:** typerna justeras med samma verktyg som i fas 4, alltså debugöverlägget och konstanter i ett ställe. Ett skript flyger varje typ och skriver ut toppfart, stallfart, svängradie och startsträcka.
 
 **Tester:** att varje typs toppfart, stallfart och startsträcka hamnar inom sina mål, att sjöflygplanet landar på vatten men kraschar på land utanför banor, att det vanliga planet fortfarande kraschar i vatten, och att gamla sparfiler läser in rekord och vrak rätt.
+
+**Resultat:**
+- **Typer** ([sim/planes.py](src/flightsim/sim/planes.py)): `AircraftType` med namn, beskrivning, `AircraftSettings`, spännvidd (för ritning), motorns grundton, turbulenskänslighet och färger. Balansskriptet (som flyger varje typ) gav:
+
+  | Typ | Toppfart | Stall | Startsträcka | 90° roll | Sväng 45° bank | Tank (full gas) |
+  |---|---|---|---|---|---|---|
+  | `TRAINER` | 141 | 50 | 62 | 1,00 s | 419 | 8 min |
+  | `STUNT` | 158 | 42 | 39 | 0,63 s | 350 | 6 min |
+  | `CARGO` | 110 | 56 | 116 | 1,87 s | 251 | 12 min |
+  | `SEAPLANE` | 126 | 48 | 58 | 1,00 s | 335 | 8 min |
+
+  Stuntplanet tippar 1,8 rad/s och har `turn_factor` 2,4. Utan den svängde det vidast av alla, eftersom svängradien växer med kvadraten på farten. Lastplanet följer spaken långsammare, gasar trögare och påverkas hälften så mycket av turbulens. Stuntplanet påverkas 1,2 gånger så mycket.
+- **Sjöflygplanet:** `AircraftSettings.floats`. Där terrängen ligger på havsnivån (vattenytan) står planet på vattnet. Vattnet bromsar mer än en bana (`water_friction`), och bromsarna verkar inte där. Land ger krasch, *FLOATS HIT THE GROUND* eller *RAN AGROUND*, utom på banor. Därför tar `Aircraft.update` nu en `runway`-funktion. En landning på vatten betygsätts som *SPLASHDOWN: SMOOTH (2.1 SINK)*. Vanliga plan går fortfarande i vattnet (*DITCHED IN THE WATER*).
+- **Grafik:** `plane_sprites(body, trim, floats)` färgar om alla vyer, inklusive vraket: tränaren vit och grå, stuntplanet rött och gult, lastplanet grått och brunt, sjöflygplanet vitt och ljusblått. Sjöflygplanet har flottörer i stället för hjul i alla vyer. Lastplanet ritas större (8,5 enheters spännvidd mot 5,5) i jaktvyn, fotoläget, repriserna och som vrak.
+- **Ljud:** motorns grundton följer typen (lastplanet djupast, stuntplanet ljusast). `Audio.set_engine` bygger om looparna.
+- **Val:**
+  - Startskärmen har tre rader: start, flygplan med beskrivning och seed. `↑`/`↓` väljer rad och `←`/`→` ändrar den.
+  - I pausmenyn ger *AIRCRAFT: TRAINER* nästa typ, men bara stillastående på en bana. Annars visas *STOP ON A RUNWAY TO CHANGE AIRCRAFT*.
+  - Valet sparas i profilen. Pausmenyns rader tätnar när menyn blir lång.
+- **Sparfiler (version 2):** vrak sparas som `[x, y, z, typ]` och behåller sina färger. Tidsloppsrekord sparas per fält och typ (`records[fält][typ]`), och spöket i ett lopp är det egna rekordet med samma typ. Äldre filer läses in med vrak och rekord som `TRAINER`.
+- **Tester:** 11 nya (totalt 233):
+  - Typernas karaktär: ordningen i toppfart, stall, rolltid och startsträcka, och att lastplanet får plats på en bana.
+  - Tankstorlekar.
+  - Sjöflygplanet: landar på vatten och lyfter igen, landar på banor men kraschar på gräs, och klarar havsnivå per värld. Vanliga hjul går fortfarande i vattnet.
+  - Kompletta sprites för alla typer och reserv vid okänt typnamn.
+  - Vrak med typ, och gamla rekord som tränarens.
+- **Provkört i riktigt fönster:**
+  - Startskärmen: *CARGO* valt och start på bana.
+  - Lastplanet i jaktvy på bana 657 (grått och större).
+  - Byte till *SEAPLANE* i pausmenyn, med toasten om flottörerna.
+  - Start med sjöflygplanet och fotoläge med flottörerna i sidovyn. `profile.json` fick `"aircraft": "SEAPLANE"`.
+- **Inte gjort:**
+  - Ingen vattenlandning i fönstret, bara i tester.
+  - Sjöflygplanet kan inte tanka på vattnet.
+  - Lastplanet har samma form som de andra, bara större och i andra färger.
 
 #### 8e – Floder *(stor)*
 

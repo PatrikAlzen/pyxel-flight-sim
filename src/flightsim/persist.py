@@ -17,7 +17,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2  # 2: aircraft type per wreck and per time-trial record
 MAX_PLACES = 20
 
 
@@ -33,11 +33,13 @@ class Place:
 @dataclass
 class WorldSave:
     seed: int
-    wrecks: list[list[float]] = field(default_factory=list)  # [x, y, z] each
+    # [x, y, z, aircraft type index] each; older files have no type (TRAINER).
+    wrecks: list[list[float]] = field(default_factory=list)
     places: list[Place] = field(default_factory=list)
     visited: list[int] = field(default_factory=list)  # airfield numbers landed at
-    # Best time trial per airfield number: {"splits": [...], "ghost": [[x, y, z], ...]}.
-    records: dict[int, dict] = field(default_factory=dict)
+    # Best time trial per airfield number and aircraft type name:
+    # {field: {"TRAINER": {"splits": [...], "ghost": [[x, y, z], ...]}}}.
+    records: dict[int, dict[str, dict]] = field(default_factory=dict)
     landmarks: list[int] = field(default_factory=list)  # lighthouse numbers discovered
 
     def add_place(self, x: float, y: float, altitude: float, heading: float) -> Place:
@@ -63,14 +65,17 @@ class WorldSave:
             )
             for p in data.get("places", [])
         ]
-        wrecks = [[float(v) for v in w[:3]] for w in data.get("wrecks", [])]
+        wrecks = [[float(v) for v in w[:4]] for w in data.get("wrecks", [])]
         visited = [int(n) for n in data.get("visited", [])]
         records = {
             int(number): {
-                "splits": [float(t) for t in record["splits"]],
-                "ghost": [[float(v) for v in p[:3]] for p in record.get("ghost", [])],
+                str(kind): _record(record)
+                # Before aircraft types a field had one record: the trainer's.
+                for kind, record in (
+                    {"TRAINER": by_type} if "splits" in by_type else by_type
+                ).items()
             }
-            for number, record in data.get("records", {}).items()
+            for number, by_type in data.get("records", {}).items()
         }
         landmarks = [int(n) for n in data.get("landmarks", [])]
         return cls(
@@ -83,18 +88,29 @@ class WorldSave:
         )
 
 
+def _record(record: dict) -> dict:
+    return {
+        "splits": [float(t) for t in record["splits"]],
+        "ghost": [[float(v) for v in p[:3]] for p in record.get("ghost", [])],
+    }
+
+
 @dataclass
 class Profile:
     """The player's settings and progress across all worlds."""
 
     fuel: bool = False  # fuel runs out and must be refilled at airfields
+    aircraft: str = "TRAINER"  # name of the aircraft type flown
 
     def to_dict(self) -> dict:
         return {"version": VERSION, **asdict(self)}
 
     @classmethod
     def from_dict(cls, data: dict) -> Profile:
-        return cls(fuel=bool(data.get("fuel", False)))
+        return cls(
+            fuel=bool(data.get("fuel", False)),
+            aircraft=str(data.get("aircraft", "TRAINER")),
+        )
 
 
 class SaveStore:

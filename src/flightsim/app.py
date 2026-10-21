@@ -62,11 +62,6 @@ from flightsim.render.sprites import (
     BROADLEAF,
     HANGAR,
     LIGHTHOUSE,
-    PLANE_FRONT,
-    PLANE_REAR,
-    PLANE_SIDE,
-    PLANE_TOP,
-    PLANE_WRECK,
     SNOWY_SPRUCE,
     SPRUCE,
     TRANSPARENT,
@@ -74,6 +69,7 @@ from flightsim.render.sprites import (
     WORLD_COLORS,
     house_images,
     make_image,
+    plane_sprites,
 )
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.render.worldmap import (
@@ -82,12 +78,13 @@ from flightsim.render.worldmap import (
     draw_map_overlay,
     draw_plane_marker,
 )
-from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
+from flightsim.sim.aircraft import Aircraft, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.sim.events import EventKind, EventLog
 from flightsim.sim.freecam import FreeCamera, FreeMode, look_at
 from flightsim.sim.particles import Particles
+from flightsim.sim.planes import TRAINER, TYPES, AircraftType, by_name
 from flightsim.sim.race import (
     Course,
     Phase,
@@ -99,7 +96,11 @@ from flightsim.sim.race import (
 from flightsim.sim.replay import Playback, Recorder, TowerSettings, tower_spot
 from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
-from flightsim.terrain.airfields import Airfield, landing_report
+from flightsim.terrain.airfields import (
+    Airfield,
+    landing_report,
+    water_landing_report,
+)
 from flightsim.terrain.generator import TerrainGenerator
 from flightsim.terrain.objects import HEIGHT, Kind, Objects, hit
 from flightsim.terrain.settlements import Lighthouse
@@ -112,7 +113,7 @@ TITLE_MAP_STEP = 32
 PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
 TOAST_SECONDS = 2.0
 RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
-GHOST_PLANE_WIDTH = 6.0  # world units, for drawing the record run's plane
+TITLE_ROWS = ("START", "AIRCRAFT", "SEED")  # top to bottom on the title screen
 REPLAY_VIEWS = ("CHASE", "COCKPIT", "TOWER", "FREE")  # C cycles through them
 
 
@@ -199,6 +200,7 @@ class App:
         self.spawn: tuple[float, float, float, float | None] = (0.0, 0.0, 0.0, None)
         self.spawn_on_ground = False
         self.start_on_runway = False  # chosen on the title screen
+        self.title_row = TITLE_ROWS.index("SEED")
         self.target_field: Airfield | None = None  # nearest airfield, for the HUD
         self.field_props: dict[int, dict[str, np.ndarray]] = {}  # per field number
         self.race: Race | None = None
@@ -251,14 +253,16 @@ class App:
         )
         palette.install()
         self.title_images = make_title_images(config.TITLE.upper())
-        self.plane_sprite = make_image(PLANE_REAR)
-        self.plane_views = {
-            "rear": self.plane_sprite,
-            "front": make_image(PLANE_FRONT),
-            "side": make_image(PLANE_SIDE),
-            "top": make_image(PLANE_TOP),
-        }
-        self.wreck_sprite = make_image(PLANE_WRECK)
+        # Rear, front, side, top and wreck images for each aircraft type.
+        self.type_views = [
+            {
+                view: make_image(rows)
+                for view, rows in plane_sprites(
+                    t.body, t.trim, t.settings.floats
+                ).items()
+            }
+            for t in TYPES
+        ]
         self.prop_sprites = {
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
             # Blowing right and, mirrored, left as seen from the camera.
@@ -284,6 +288,7 @@ class App:
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
         self.profile = self.store.load_profile()
+        self.audio.set_engine(self.plane_type.engine_note)
         pyxel.run(self.update, self.draw)
 
     # --- update -----------------------------------------------------------
@@ -317,18 +322,30 @@ class App:
 
     def update_title(self) -> None:
         seed = self.seed
-        if pressed(Action.LEFT):
-            seed -= 1
-        if pressed(Action.RIGHT):
-            seed += 1
+        row = TITLE_ROWS[self.title_row]
+        step = pressed(Action.RIGHT) - pressed(Action.LEFT)
+        if row == "SEED":
+            seed += step
+        elif row == "START" and step:
+            self.start_on_runway = not self.start_on_runway
+            self.audio.menu_move()
+        elif row == "AIRCRAFT" and step:
+            self.choose_aircraft(
+                TYPES[(TYPES.index(self.plane_type) + step) % len(TYPES)]
+            )
+            self.audio.menu_move()
         if pressed(Action.RANDOM):
             seed = random.randrange(1, 100_000)
         if seed != self.seed:
             self.seed = seed
             self.preview = WorldMap(TerrainGenerator(seed))
             self.audio.menu_move()
-        if pressed(Action.UP) or pressed(Action.DOWN):
-            self.start_on_runway = not self.start_on_runway
+        rows = len(TITLE_ROWS)
+        if pressed(Action.UP):
+            self.title_row = (self.title_row - 1) % rows
+            self.audio.menu_move()
+        if pressed(Action.DOWN):
+            self.title_row = (self.title_row + 1) % rows
             self.audio.menu_move()
         if pressed(Action.CONFIRM):
             self.audio.menu_confirm()
@@ -341,7 +358,9 @@ class App:
         self.world = make_world(self.seed)
         self.world_map = WorldMap(self.world.generator)
         sea_level = self.world.generator.settings.sea_level
-        self.aircraft = Aircraft(settings=AircraftSettings(sea_level=sea_level))
+        self.aircraft = Aircraft(
+            settings=replace(self.plane_type.settings, sea_level=sea_level)
+        )
         self.aircraft.uses_fuel = self.profile.fuel
         self.camera = Camera()
         self.chase.reset()
@@ -358,7 +377,8 @@ class App:
         self.recorder.clear()
         self.saved = self.store.load(self.seed)
         for wreck in self.saved.wrecks:
-            self.wrecks.add(np.array(wreck))
+            kind = int(wreck[3]) if len(wreck) > 3 else 0  # older: the trainer
+            self.wrecks.add(np.array(wreck[:3]), min(kind, len(TYPES) - 1))
         self.time = 0.0
         self.ghost = False
         self.field_props.clear()
@@ -523,6 +543,8 @@ class App:
                 self.cycle_weather()
             case item if item.startswith("FUEL"):
                 self.toggle_fuel()
+            case item if item.startswith("AIRCRAFT"):
+                self.change_aircraft()
             case "PHOTO MODE":
                 self.enter_photo()
             case "REPLAY":
@@ -548,6 +570,7 @@ class App:
             *trial,
             weather,
             f"FUEL: {'ON' if self.profile.fuel else 'OFF'}",
+            f"AIRCRAFT: {self.plane_type.name}",
             "PHOTO MODE",
             "REPLAY",
             "NEW WORLD",
@@ -833,7 +856,7 @@ class App:
                 plane.up,
                 self.camera,
                 self.renderer,
-                config.PHOTO_PLANE_SPAN,
+                self.plane_type.span,
             )
         playback = self.playback
         duration = playback.recording.duration
@@ -986,7 +1009,7 @@ class App:
             )
         course = self.courses[field.number]
         self.last_trial_field = field
-        record = self.saved.records.get(field.number)
+        record = self.saved.records.get(field.number, {}).get(self.plane_type.name)
         self.race = Race(course, record=record["splits"] if record else None)
         self.record_ghost = record["ghost"] if record else None
         self.race_flash = None
@@ -1034,7 +1057,8 @@ class App:
         if race.record is not None:
             result += f" ({race.time - race.record[-1]:+.1f})"
         if race.is_record:
-            self.saved.records[race.course.field_number] = {
+            records = self.saved.records.setdefault(race.course.field_number, {})
+            records[self.plane_type.name] = {
                 "splits": [round(t, 3) for t in race.splits],
                 "ghost": race.ghost,
             }
@@ -1076,8 +1100,19 @@ class App:
         was_flying = plane.state is FlightState.FLYING
         start = np.array([plane.x, plane.y, plane.altitude])
         self.turbulence = self.turbulence_here()
-        bump = self.weather.turbulence_kick(self.turbulence)
-        plane.update(flight_controls(), DT, self.world.height_at, self.wind, bump)
+        kick = self.weather.turbulence_kick(self.turbulence)
+        bump = (
+            kick[0] * self.plane_type.turbulence,
+            kick[1] * self.plane_type.turbulence,
+        )
+        plane.update(
+            flight_controls(),
+            DT,
+            self.world.height_at,
+            self.wind,
+            bump,
+            runway=self.on_runway,
+        )
         if was_flying and plane.state is FlightState.LANDED:
             self.touched_down()
         self.refuel()
@@ -1126,6 +1161,40 @@ class App:
                 self.persist()
                 self.show_toast(f"DISCOVERED {light.name}")
 
+    @property
+    def plane_type(self) -> AircraftType:
+        return by_name(self.profile.aircraft)
+
+    @property
+    def plane_views(self) -> dict[str, pyxel.Image]:
+        return self.type_views[TYPES.index(self.plane_type)]
+
+    def choose_aircraft(self, plane_type: AircraftType) -> None:
+        """Fly ``plane_type`` from now on (also in later sessions)."""
+        self.profile.aircraft = plane_type.name
+        self.audio.set_engine(plane_type.engine_note)
+        try:
+            self.store.save_profile(self.profile)
+        except OSError:
+            self.show_toast("COULD NOT SAVE")
+
+    def change_aircraft(self) -> None:
+        """Pause menu: swap to the next type, only standing still on a runway."""
+        plane = self.aircraft
+        on_runway = self.on_runway(plane.x, plane.y)
+        if plane.state is not FlightState.LANDED or plane.speed > 1.0 or not on_runway:
+            self.show_toast("STOP ON A RUNWAY TO CHANGE AIRCRAFT")
+            return
+        new = TYPES[(TYPES.index(self.plane_type) + 1) % len(TYPES)]
+        self.choose_aircraft(new)
+        plane.settings = replace(new.settings, sea_level=plane.settings.sea_level)
+        plane.fuel = 1.0
+        self.end_race("TIME TRIAL ENDED")
+        self.show_toast(f"{new.name}: {new.description}", 3.0)
+
+    def on_runway(self, x: float, y: float) -> bool:
+        return self.world.generator.airfields.runway_at(x, y) is not None
+
     def toggle_fuel(self) -> None:
         """Pause menu: fuel on (it runs out) or off (it never does)."""
         self.profile.fuel = not self.profile.fuel
@@ -1163,6 +1232,14 @@ class App:
         plane = self.aircraft
         field = self.world.generator.airfields.runway_at(plane.x, plane.y)
         if field is None:
+            if plane.on_water:
+                report = water_landing_report(
+                    plane.touchdown_sink, plane.touchdown_engine_out
+                )
+                self.show_toast(report)
+                self.events.emit(
+                    EventKind.LANDING, (plane.x, plane.y, plane.altitude), report
+                )
             return
         report = landing_report(
             field, plane.x, plane.y, plane.touchdown_sink, plane.touchdown_engine_out
@@ -1179,8 +1256,8 @@ class App:
         plane = self.aircraft
         ground = max(self.world.height_at(plane.x, plane.y), plane.settings.sea_level)
         site = np.array([plane.x, plane.y, ground])
-        self.wrecks.add(site)
-        self.saved.wrecks = self.wrecks.positions.tolist()
+        self.wrecks.add(site, TYPES.index(self.plane_type))
+        self.saved.wrecks = self.wrecks.to_list()
         self.persist()
         self.particles.explode(site + [0.0, 0.0, 2.0])
         self.events.emit(EventKind.CRASH, site, plane.crash_reason)
@@ -1301,19 +1378,24 @@ class App:
         draw_particles(self.particles, self.camera, self.renderer)
         self.draw_airfield_props()
         self.draw_objects()
-        nearby = self.wrecks.near(
+        nearby, kinds = self.wrecks.near_with_kinds(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
         if self.mode is Mode.REPLAY:
-            nearby = self.wrecks_not_yet_crashed(nearby)
+            keep = self.not_yet_crashed(nearby)
+            nearby, kinds = nearby[keep], kinds[keep]
         draw_billboards(
-            self.wreck_sprite,
+            [views["wreck"] for views in self.type_views],
             TRANSPARENT,
             nearby,
             self.camera,
             self.renderer,
-            WRECK_FULL_SIZE_DISTANCE * self.zoom,
+            [
+                WRECK_FULL_SIZE_DISTANCE * self.zoom * t.span / TRAINER.span
+                for t in TYPES
+            ],
             WRECK_TILT,
+            variants=kinds,
         )
         if self.race:
             draw_rings(self.race, self.camera, self.renderer)
@@ -1365,7 +1447,7 @@ class App:
                 plane.up,
                 self.camera,
                 self.renderer,
-                config.PHOTO_PLANE_SPAN,
+                self.plane_type.span,
             )
         if self.photo_frame:
             bar = H // 9
@@ -1394,14 +1476,14 @@ class App:
         for i, line in enumerate(lines):
             shadow_text(4, H - 8 * (len(lines) - i), line, TEXT)
 
-    def wrecks_not_yet_crashed(self, wrecks: np.ndarray) -> np.ndarray:
-        """In a replay, the wreck of the crash still to come is not there yet."""
+    def not_yet_crashed(self, wrecks: np.ndarray) -> np.ndarray:
+        """Which wrecks to show in a replay: not the one of the crash still to come."""
+        keep = np.ones(len(wrecks), dtype=bool)
         crash = self.playback.recording.crash()
         if crash is None or crash[0] <= self.playback.time or not len(wrecks):
-            return wrecks
+            return keep
         site = crash[1].position
-        keep = np.hypot(wrecks[:, 0] - site[0], wrecks[:, 1] - site[1]) > 1.0
-        return wrecks[keep]
+        return np.hypot(wrecks[:, 0] - site[0], wrecks[:, 1] - site[1]) > 1.0
 
     def draw_rain(self) -> None:
         """Rain falls below the clouds; it thins out climbing up into them."""
@@ -1418,8 +1500,8 @@ class App:
         where = ghost_position(self.record_ghost, race.elapsed, race.ghost_interval)
         if where is None:
             return
-        sprite = self.plane_sprite
-        full = full_size_distance(sprite, GHOST_PLANE_WIDTH, self.renderer.focal)
+        sprite = self.plane_views["rear"]
+        full = full_size_distance(sprite, self.plane_type.span, self.renderer.focal)
         pyxel.dither(0.5)
         draw_billboards(
             sprite, TRANSPARENT, where[None, :], self.camera, self.renderer, full
@@ -1537,7 +1619,7 @@ class App:
         if spot is None:
             return
         x, y, _ = spot
-        img = self.plane_sprite
+        img = self.plane_views["rear"]
         pyxel.blt(
             x - img.width / 2,
             y - img.height / 2,
@@ -1548,6 +1630,7 @@ class App:
             img.height,
             TRANSPARENT,
             rotate=sprite_angle(plane, cam),
+            scale=self.plane_type.span / TRAINER.span,
         )
 
     def draw_title(self) -> None:
@@ -1562,7 +1645,7 @@ class App:
         pyxel.blt(x, 29, title, 0, 0, title.width, title.height, 2, scale=3)
 
         shaded_rect(0, H - 34, W, 34)
-        centered_text(H - 30, f"<  SEED {self.seed}  >", pyxel.COLOR_YELLOW)
+        self.title_line(H - 30, "SEED", f"SEED {self.seed}")
         if self.title_summary is None or self.title_summary[0] != self.seed:
             self.title_summary = (self.seed, self.store.summary(self.seed))
         wrecks, places = self.title_summary[1]
@@ -1570,12 +1653,22 @@ class App:
             shaded_rect(0, 50, W, 10)
             saved = f"{plural(wrecks, 'WRECK')}, {plural(places, 'PLACE')}"
             centered_text(52, f"SAVED HERE: {saved}", TEXT)
-        centered_text(H - 21, "LEFT/RIGHT CHANGE SEED   R RANDOM", HUD)
+        centered_text(H - 21, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  R RANDOM", HUD)
         start = "ON A RUNWAY" if self.start_on_runway else "IN THE AIR"
-        shaded_rect(0, 62, W, 10)
-        centered_text(64, f"START {start}  (UP/DOWN)", pyxel.COLOR_LIGHT_BLUE)
+        shaded_rect(0, 62, W, 28)
+        self.title_line(64, "START", f"START {start}")
+        plane = self.plane_type
+        self.title_line(74, "AIRCRAFT", f"AIRCRAFT {plane.name}")
+        centered_text(83, plane.description, pyxel.COLOR_GRAY)
         if pyxel.frame_count // 15 % 2 == 0:
             centered_text(H - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
+
+    def title_line(self, y: int, row: str, text: str) -> None:
+        """One choice on the title screen; the selected one has arrows."""
+        if TITLE_ROWS[self.title_row] == row:
+            centered_text(y, f"<  {text}  >", pyxel.COLOR_YELLOW)
+        else:
+            centered_text(y, text, pyxel.COLOR_LIGHT_BLUE)
 
     def draw_loading(self) -> None:
         pyxel.cls(pyxel.COLOR_NAVY)
@@ -1588,8 +1681,10 @@ class App:
 
     def draw_pause_menu(self) -> None:
         items = self.pause_items()
-        width, height = 100, 22 + len(items) * 10
-        x, y = (W - width) // 2, (H - height) // 2
+        # Rows close up when the menu is long, so it stays clear of the toast.
+        spacing = min(10, (H - 40) // len(items))
+        width, height = 100, 22 + len(items) * spacing
+        x, y = (W - width) // 2, (H - 14 - height) // 2
         shaded_rect(0, 0, W, H)
         pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
         pyxel.rectb(x, y, width, height, HUD)
@@ -1598,7 +1693,7 @@ class App:
             selected = i == self.menu_index
             label = f"> {item} <" if selected else item
             centered_text(
-                y + 17 + i * 10, label, TEXT if selected else pyxel.COLOR_GRAY
+                y + 17 + i * spacing, label, TEXT if selected else pyxel.COLOR_GRAY
             )
 
     def draw_places_menu(self) -> None:

@@ -85,6 +85,9 @@ class AircraftSettings:
     spawn_throttle: float = 0.7
 
     sea_level: float = 0.0
+    # Floats instead of wheels: water is a runway, land (except runways) a crash.
+    floats: bool = False
+    water_friction: float = 6.0  # slows the floats more than wheels on tarmac
 
 
 class FlightState(Enum):
@@ -125,6 +128,7 @@ class Aircraft:
     touchdown_sink: float = 0.0
     touchdown_engine_out: bool = False  # a deadstick landing
     fuel: float = 1.0  # share of a full tank
+    on_water: bool = False  # floating rather than on wheels
     uses_fuel: bool = False  # off: the tank never empties
     settings: AircraftSettings = AircraftSettings()
 
@@ -258,10 +262,12 @@ class Aircraft:
         ground: Ground,
         wind: tuple[float, float] = (0.0, 0.0),
         bump: tuple[float, float] = (0.0, 0.0),
+        runway: Callable[[float, float], bool] | None = None,
     ) -> None:
         """Advance one step. ``wind`` (x, y velocity) carries the plane along while
         it flies; on the ground the wheels hold it. ``bump`` is turbulence: extra
-        pitch and roll rates (radians per second) on top of the stick's."""
+        pitch and roll rates (radians per second) on top of the stick's.
+        ``runway`` says whether a point is on a runway, where floats may land."""
         self.state_time += dt
         if self.state is FlightState.CRASHED:
             return
@@ -300,7 +306,7 @@ class Aircraft:
         self.vertical_speed = climb
         self.altitude += climb * dt
 
-        self._touch_ground(ground)
+        self._touch_ground(ground, runway)
 
     def _follow_stick(self, controls: Controls, dt: float, roll: bool) -> float:
         """Ease the pitch and roll rates towards the stick; returns control authority."""
@@ -379,20 +385,23 @@ class Aircraft:
             - s.drag * self.speed**2
             - s.gravity * self.forward[2]
         )
-        if on_ground:
+        if on_ground and self.on_water:
+            accel -= s.water_friction  # no brakes on water
+        elif on_ground:
             accel -= s.rolling_friction + (s.brake_force if controls.brake else 0.0)
         self.speed = max(0.0, self.speed + accel * dt)
 
-    def _touch_ground(self, ground: Ground) -> None:
+    def _touch_ground(self, ground: Ground, runway=None) -> None:
         s = self.settings
         height = ground(self.x, self.y)
-        floor = height + s.gear_height
+        self.on_water = s.floats and height <= s.sea_level
+        floor = (s.sea_level if self.on_water else height) + s.gear_height
         if self.altitude > floor:
             if self.state is FlightState.LANDED:
                 self.state = FlightState.FLYING  # took off or rolled over an edge
             return
 
-        problem = self._ground_problem(height, ground)
+        problem = self._ground_problem(height, ground, runway)
         if problem:
             self._crash(problem)
             return
@@ -409,14 +418,17 @@ class Aircraft:
         self.sink = 0.0
         self.vertical_speed = 0.0
 
-    def _ground_problem(self, height: float, ground: Ground) -> str:
-        """Why touching the ground here is a crash, or "" if it is fine."""
+    def _ground_problem(self, height: float, ground: Ground, runway=None) -> str:
+        """Why touching the ground (or water) here is a crash, or "" if it is fine."""
         s = self.settings
         landed = self.state is FlightState.LANDED
-        if height <= s.sea_level:
+        if height <= s.sea_level and not self.on_water:
             return "DITCHED IN THE WATER"
+        on_runway = runway is not None and runway(self.x, self.y)
+        if s.floats and not self.on_water and not on_runway:
+            return "RAN AGROUND" if landed else "FLOATS HIT THE GROUND"
         max_slope = s.max_taxi_slope if landed else s.max_ground_slope
-        if _slope(ground, self.x, self.y, height) > max_slope:
+        if not self.on_water and _slope(ground, self.x, self.y, height) > max_slope:
             return "HIT THE TERRAIN"
         if landed:
             return ""

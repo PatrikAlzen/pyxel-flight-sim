@@ -15,7 +15,7 @@ changes. The loops are a tenth of a second long, so a switch is inaudible.
 calls, so it can be tested without an audio device.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pyxel
 
@@ -73,7 +73,7 @@ SILENT = SoundState(None, 0, None)
 
 class Audio:
     def __init__(self) -> None:
-        self.engine = [self._engine_sound(level) for level in range(ENGINE_LEVELS)]
+        self.set_engine(6)
         self.wind = [None] + [
             self._wind_sound(level) for level in range(1, WIND_LEVELS)
         ]
@@ -93,9 +93,17 @@ class Audio:
         self.playing = SILENT
         self.last_state: FlightState | None = None
 
+    def set_engine(self, note: int) -> None:
+        """Engine loops starting at Pyxel note ``note``: lower for a bigger plane."""
+        self.engine = [
+            self._engine_sound(note, level) for level in range(ENGINE_LEVELS)
+        ]
+        if hasattr(self, "playing"):  # restart the engine loop with the new sound
+            self.playing = replace(self.playing, engine=None)
+
     @staticmethod
-    def _engine_sound(level: int) -> pyxel.Sound:
-        base = 6 + level * 2
+    def _engine_sound(note: int, level: int) -> pyxel.Sound:
+        base = note + level * 2
         low, high = note_name(base), note_name(base + 7)
         volume = str(3 + level * 3 // ENGINE_LEVELS)
         return make_sound(low + low + high + low, "snsn", volume, "n", 3)

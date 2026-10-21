@@ -23,6 +23,7 @@ _COLORS = {
     "o": pyxel.COLOR_ORANGE,
     "b": pyxel.COLOR_BROWN,
     "e": pyxel.COLOR_GREEN,
+    "l": pyxel.COLOR_LIGHT_BLUE,
 }
 
 # A small high-wing plane seen from behind and slightly above. Navigation
@@ -136,6 +137,49 @@ WINDSOCK = [
     "k.......",
     "k.......",
 ]
+
+
+# Floats replacing the wheels, row by row, for a seaplane's views.
+_FLOATS = {
+    "rear": {
+        9: ".....k....kgggk....k.....",
+        10: "....kwk....kkk....kwk....",
+    },
+    "front": {
+        10: "......k...kwwwk...k......",
+        11: ".....kwk.........kwk.....",
+    },
+    "side": {
+        8: "........k.......k........",
+        9: "...kwwwwwwwwwwwwwwwwwk...",
+    },
+    "top": {
+        6: ".......k...kwk...k.......",
+        7: ".......k...kwk...k.......",
+        8: ".......k...kwk...k.......",
+    },
+}
+
+
+def plane_sprites(body: str = "w", trim: str = "g", floats: bool = False):
+    """The plane's views (rear, front, side, top and wreck) as sprite rows,
+    with ``body`` and ``trim`` colours in place of white and grey."""
+    views = {
+        "rear": PLANE_REAR,
+        "front": PLANE_FRONT,
+        "side": PLANE_SIDE,
+        "top": PLANE_TOP,
+        "wreck": PLANE_WRECK,
+    }
+    result = {}
+    for view, rows in views.items():
+        rows = list(rows)
+        if floats:
+            for i, row in _FLOATS.get(view, {}).items():
+                rows[i] = row
+        colours = str.maketrans({"w": body, "g": trim})
+        result[view] = [row.translate(colours) for row in rows]
+    return result
 
 
 def make_image(rows: list[str], legend: dict[str, int] | None = None) -> pyxel.Image:

@@ -197,12 +197,8 @@ class Airfields:
         )
 
 
-def landing_report(
-    field: Airfield, x: float, y: float, sink: float, deadstick: bool = False
-) -> str:
-    """One line grading a touchdown on ``field`` by sink rate and centring;
-    ``deadstick`` when the engine was out."""
-    _, v = field.local(x, y)
+def landing_quality(sink: float, deadstick: bool = False) -> str:
+    """A touchdown graded by sink rate, e.g. "SMOOTH" or "DEADSTICK BUTTER"."""
     if sink < 1.5:
         quality = "BUTTER"
     elif sink < 3.5:
@@ -211,6 +207,19 @@ def landing_report(
         quality = "FIRM"
     else:
         quality = "HARD"
-    if deadstick:
-        quality = "DEADSTICK " + quality
+    return "DEADSTICK " + quality if deadstick else quality
+
+
+def landing_report(
+    field: Airfield, x: float, y: float, sink: float, deadstick: bool = False
+) -> str:
+    """One line grading a touchdown on ``field`` by sink rate and centring;
+    ``deadstick`` when the engine was out."""
+    _, v = field.local(x, y)
+    quality = landing_quality(sink, deadstick)
     return f"FIELD {field.number}: {quality} ({sink:.1f} SINK, {abs(float(v)):.0f} OFF CENTRE)"
+
+
+def water_landing_report(sink: float, deadstick: bool = False) -> str:
+    """A seaplane's touchdown on water."""
+    return f"SPLASHDOWN: {landing_quality(sink, deadstick)} ({sink:.1f} SINK)"

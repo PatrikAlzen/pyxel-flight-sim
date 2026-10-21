@@ -89,14 +89,24 @@ def test_visited_airfields_round_trip(store):
 
 
 def test_time_trial_records_round_trip(store):
-    world = WorldSave(
-        12, records={657: {"splits": [10.5, 20.25], "ghost": [[1, 2, 3]]}}
-    )
+    record = {"splits": [10.5, 20.25], "ghost": [[1.0, 2.0, 3.0]]}
+    world = WorldSave(12, records={657: {"STUNT": record, "TRAINER": record}})
     store.save(world)
-    loaded = store.load(12)
-    assert loaded.records == {
-        657: {"splits": [10.5, 20.25], "ghost": [[1.0, 2.0, 3.0]]}
+    assert store.load(12).records == {657: {"STUNT": record, "TRAINER": record}}
+
+
+def test_records_from_before_aircraft_types_are_the_trainers(store):
+    store.directory.mkdir(parents=True)
+    old = {"version": 1, "records": {"657": {"splits": [10.5], "ghost": [[1, 2, 3]]}}}
+    store.path(14).write_text(json.dumps(old))
+    assert store.load(14).records == {
+        657: {"TRAINER": {"splits": [10.5], "ghost": [[1.0, 2.0, 3.0]]}}
     }
+
+
+def test_wrecks_keep_their_aircraft_type(store):
+    store.save(WorldSave(15, wrecks=[[1.0, 2.0, 3.0, 2.0], [4.0, 5.0, 6.0]]))
+    assert store.load(15).wrecks == [[1.0, 2.0, 3.0, 2.0], [4.0, 5.0, 6.0]]
 
 
 def test_landmarks_round_trip(store):
