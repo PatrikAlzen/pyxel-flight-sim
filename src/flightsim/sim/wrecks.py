@@ -30,6 +30,12 @@ class Wrecks:
         self.positions = np.zeros((0, 3))
         self.kinds = np.zeros(0, dtype=np.int64)
 
+    def settle(self, ground) -> None:
+        """Put every wreck back on the ground (``ground(x, y)`` per array), e.g.
+        after the terrain has changed under old saved wrecks."""
+        if len(self):
+            self.positions[:, 2] = ground(self.positions[:, 0], self.positions[:, 1])
+
     def _within(self, x: float, y: float, radius: float) -> np.ndarray:
         offset = self.positions[:, :2] - (x, y)
         return np.hypot(offset[:, 0], offset[:, 1]) <= radius

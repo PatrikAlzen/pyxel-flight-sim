@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8d klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet och flygplanstyperna är klara, och kvar är floder, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget, repriserna, bränslet, flygplanstyperna och floderna är klara, och kvar är trafik och utmärkelser.
 
 ---
 
@@ -239,7 +239,7 @@ pyxel-flight-sim/
 │       ├── mapview.py         # debugkarta ovanifrån för att finjustera terrängen
 │       ├── terrain/
 │       │   ├── noise.py       # vektoriserat gradientbrus, fbm, ridged, domain warp
-│       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
+│       │   ├── generator.py   # höjd, floder, fuktighet, biom → höjd- och färgkarta per chunk
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
 │       │   ├── airfields.py   # flygfält: placering, utjämnad mark, banmålning, landningsbetyg
 │       │   ├── settlements.py # byar och fyrar: placering per cell, namn
@@ -281,7 +281,8 @@ pyxel-flight-sim/
     ├── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
     ├── test_replay.py         # ringbuffert, interpolation, hopp, krasch, händelser, tornkamera
     ├── test_fuel.py           # förbrukning, motorstopp, räckvidd, tankning, deadstick, profil
-    └── test_planes.py         # typernas karaktär, sjöflygplan på vatten och land, sprites, vrak
+    ├── test_planes.py         # typernas karaktär, sjöflygplan på vatten och land, sprites, vrak
+    └── test_rivers.py         # långa floder med vatten, bara nedåt, slut i fjällen, kostnad, vrak
 ```
 
 ## Implementationsplan
@@ -967,7 +968,7 @@ Målet är att planen ska kännas olika och passa olika sorters flygning.
   - Sjöflygplanet kan inte tanka på vattnet.
   - Lastplanet har samma form som de andra, bara större och i andra färger.
 
-#### 8e – Floder *(stor)*
+#### 8e – Floder ✅
 
 Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga vägar mellan kust och berg.
 
@@ -981,6 +982,38 @@ Målet är att landskapet ska få dalar och vattendrag att följa, som naturliga
 - **Flyga längs floden:** utmärkelser (8g) som *följ en flod 5 km under 50 enheter*, och tidslopp längs floddalar kan bli en variant av 7c senare.
 
 **Tester:** att tiles fortfarande är sömlösa, att flodvatten bildar långa sammanhängande stråk (största sammanhängande komponent över en viss längd på en 8 × 8 km karta), att floderna inte korsar högfjäll, att generering per tile blir högst 15 % dyrare och att gamla vrak flyttas upp till marken. **Risk:** floderna kan se ut som kanaler med jämn bredd, och dalarna kan skära sönder flygfält och byar. Det mildras med warp, bredd som varierar längs floden, och med att flygfält och byar placeras efter floderna.
+
+**Resultat:**
+- **Floder** ([terrain/generator.py](src/flightsim/terrain/generator.py)):
+  - Floderna går där ett eget brus med två oktaver (period 1700) är noll. Bruset räknas i kontinenternas förvrängda koordinater, så floderna slingrar sig. Långa sammanhängande lopp går mellan kust, sjöar och fjäll, och där bruset ligger nära noll en bit bildas små sjöar.
+  - Avståndet till mittlinjen är `|r| / |∇r|`.
+  - Fåran är 6–20 enheter bred och varierar längs floden. Dalen är nio gånger så bred.
+  - I dalen sänks marken mot 8 % av höjden över havet. I fåran går den till 4 enheter under havsnivån, så den fylls med vatten som får vågor och färg som havet.
+  - Floderna tunnas ut mellan 150 och 250 enheters höjd och slutar där. Marken sänks bara, den höjs aldrig.
+- **Punkt för punkt, men billigt:** bruset ändras långsamt, så det räknas i ett fast rutnät i världen (var 8:e enhet) och interpoleras bilinjärt. Gradienten fås ur rutans hörn.
+  - En tile behöver ~300 brusvärden i stället för 17 000. Spridda punkter (byar, flygfält) räknar sina unika hörn i samma rutnät.
+  - Höjden blir därför exakt densamma i en tile som i en enstaka punkt (testat). Ett hus på en flodbank står alltså på den mark som ritas.
+  - Grova nivåer använder ett rutnät på 4 gånger sitt steg. Där står inga objekt, och flodlinjen flyttas mycket mindre än en cell.
+  - Resten av dalberäkningen görs bara för punkter inom en dalbredd från floden (~2 % av marken).
+  - En analytisk brusgradient prövades först men blev knappt billigare än tre vanliga anrop och togs bort.
+- **Kostnad** (mätt omväxlande mot samma värld utan floder): fina tiles +12 % (+13 % med objekt), steg 8 +11 % och steg 32 +5 %.
+- **Biom:** dalen får 0,3 mer fukt, vilket ger skog och gräs längs floden. Kanterna nära havsnivån blir sand av sig själva, och branta dalsidor i högre terräng blir klippa, så floderna blir raviner där.
+- **Samspel:**
+  - Flygfält placeras på den naturliga terrängen med floder och undviker dem genom kraven på flackhet och höjd.
+  - Byar hittar vatten i floder (testet söker nu på samma två cirklar som placeringen, eftersom en smal flod kan gå mellan punkterna på en).
+  - Träd växer inte i vatten.
+  - Kartan och minikartan visar floderna utan ändringar.
+- **Gamla världar:** i stället för en `terrain_version` läggs alla sparade vrak på marken varje gång världen laddas (`Wrecks.settle`). Det är billigt och fungerar för alla framtida terrängändringar. Platser behövde inget, eftersom `place_aircraft` redan håller planet minst en säker höjd över marken.
+- **Tester:** 6 nya (totalt 239):
+  - Flodernas form: en flod som sträcker sig över mer än 3 km av en karta på 8 × 8 km, och att nästan varje dalbotten har vatten.
+  - Höjd: att marken bara sänks och är orörd över 250 enheter.
+  - Kostnad under 20 % (mätt 12 %), och att tiles och enstaka punkter ger samma höjd.
+  - Att gamla vrak läggs på den nya marken. Det befintliga testet för sömlösa tiles täcker floderna också.
+- **Provkört i riktigt fönster:** lågt längs en flod öster om start (x ≈ 600, y ≈ −800) syntes fåran med vatten, skog på dalbotten, sandbankar och branta dalsidor, och floden på minikartan. Ovanifrån syntes slingorna genom dalen.
+- **Inte gjort:**
+  - Floderna rinner inte nedför, vattenytan ligger på havsnivån hela vägen. Därför blir de djupa raviner i högre terräng i stället för forsar.
+  - Inga broar.
+  - Inga tidslopp eller utmärkelser längs floder ännu (8g).
 
 #### 8f – Trafik mellan flygfälten *(stor)*
 

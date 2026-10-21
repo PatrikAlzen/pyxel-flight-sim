@@ -379,6 +379,12 @@ class App:
         for wreck in self.saved.wrecks:
             kind = int(wreck[3]) if len(wreck) > 3 else 0  # older: the trainer
             self.wrecks.add(np.array(wreck[:3]), min(kind, len(TYPES) - 1))
+        # Saved under older terrain (before rivers, say) a wreck could float
+        # above a valley or sink into a hill; the ground decides.
+        generator = self.world.generator
+        self.wrecks.settle(
+            lambda x, y: np.maximum(generator.elevation(x, y), sea_level)
+        )
         self.time = 0.0
         self.ghost = False
         self.field_props.clear()

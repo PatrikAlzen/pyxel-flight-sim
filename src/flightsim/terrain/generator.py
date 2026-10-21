@@ -17,6 +17,9 @@ from flightsim.terrain.biomes import Biome, classify
 from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
 from flightsim.terrain.settlements import Settlements
 
+# World spacing of the lattice the river noise is sampled on for tiles.
+RIVER_LATTICE = 8.0
+
 
 @dataclass(frozen=True)
 class TerrainSettings:
@@ -39,6 +42,17 @@ class TerrainSettings:
     hill_height: float = 14.0
 
     moisture_period: float = 1500.0
+
+    # Rivers: the zero lines of a low-frequency noise, in the same warped
+    # coordinates as the continents so they meander. A valley is cut towards a
+    # low floor and the channel itself below sea level, so it fills with water.
+    river_period: float = 1700.0
+    river_width: tuple[float, float] = (3.0, 10.0)  # half-width of the water
+    valley_width: float = 9.0  # valley half-width, in river half-widths
+    valley_floor: float = 0.08  # of the height above sea level, left at the bottom
+    channel_depth: float = 4.0  # below sea level in the middle of the river
+    river_fade: tuple[float, float] = (150.0, 250.0)  # rivers end up in mountains
+    valley_moisture: float = 0.3  # greener valleys
 
     # Biome thresholds (heights above sea level).
     deep_water: float = 18.0
@@ -86,6 +100,7 @@ class TerrainGenerator:
         self._hills = FractalNoise(seed + 6, octaves=4)
         self._moisture = FractalNoise(seed + 7, octaves=3)
         self._jitter = FractalNoise(seed + 8, octaves=2)
+        self._rivers = FractalNoise(seed + 9, octaves=2)
         self.airfields = Airfields(
             seed,
             self.natural_elevation,
@@ -97,11 +112,19 @@ class TerrainGenerator:
         )
 
     def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Terrain height at world coordinates, including the sea floor."""
+        """Terrain height at world coordinates, including the sea floor and
+        river beds."""
         return self.airfields.flatten(x, y, self.natural_elevation(x, y))
 
     def natural_elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Terrain height before airfields level the ground."""
+        return self._natural(x, y)[0]
+
+    def _natural(
+        self, x: np.ndarray, y: np.ndarray, lattice: float = RIVER_LATTICE
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Natural terrain height, and how deep in a river valley each point is
+        (0 outside, 1 at the river). ``lattice``: see ``_river_distance``."""
         s = self.settings
         cx, cy = domain_warp(
             np.asarray(x, dtype=np.float64) / s.continent_period,
@@ -144,7 +167,118 @@ class TerrainGenerator:
             * on_land
         )
 
-        return s.sea_level + base + mountains + hills
+        height = s.sea_level + base + mountains + hills
+        return self._carve_rivers(x, y, cx, cy, height, lattice)
+
+    def _carve_rivers(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        cx: np.ndarray,
+        cy: np.ndarray,
+        height: np.ndarray,
+        lattice: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Cut river valleys into ``height`` at world (x, y), whose warped
+        continent coordinates are (cx, cy).
+
+        A river runs where the river noise ``r`` is zero, and the distance to
+        that line is about ``|r| / |grad r|`` (see ``_river_distance``).
+        """
+        s = self.settings
+        above = height - s.sea_level
+        fade = 1.0 - smoothstep(*s.river_fade, above)
+        need = (above > 0) & (fade > 0)
+        valley = np.zeros(np.shape(height), dtype=np.float32)
+        if not need.any():
+            return height, valley
+        wx, wy = np.broadcast_arrays(np.asarray(x, dtype=np.float64), y)
+        distance = self._river_distance(wx[need], wy[need], lattice)
+        low, high = s.river_width
+        # Only points within the widest valley of a river change at all.
+        cells = np.flatnonzero(need)
+        near = distance < high * s.valley_width
+        cells, distance = cells[near], distance[near]
+        result = np.broadcast_to(
+            np.asarray(height, dtype=np.float64), need.shape
+        ).copy()
+        if not len(cells):
+            return result, valley
+        scale = s.continent_period / s.river_period
+        u = np.broadcast_to(cx, need.shape).ravel()[cells] * scale
+        v = np.broadcast_to(cy, need.shape).ravel()[cells] * scale
+        # The river widens and narrows along its course.
+        width = low + (high - low) * (0.5 + 0.5 * np.sin(u * 7.3 + v * 5.1))
+        f = fade.ravel()[cells]
+        here = above.ravel()[cells]
+        floor = here * s.valley_floor
+        valley_t = smoothstep(width * s.valley_width, width, distance) * f
+        carved = here + (floor - here) * valley_t
+        channel = smoothstep(width, width * 0.3, distance) * f
+        carved = carved + (-s.channel_depth - carved) * channel
+        result.ravel()[cells] = s.sea_level + np.minimum(carved, here)
+        valley.ravel()[cells] = valley_t
+        return result, valley
+
+    def _river_distance(
+        self, x: np.ndarray, y: np.ndarray, cell: float = RIVER_LATTICE
+    ) -> np.ndarray:
+        """Approximate world distance from each point to the nearest river line.
+
+        The river noise changes slowly, so it is evaluated on a fixed world
+        lattice and interpolated bilinearly, which also gives its gradient from
+        the cell corners. A tile needs only a few hundred corners instead of
+        thousands of points. Every caller uses the same lattice, so heights
+        depend on position alone: a village placed on a riverbank stands on the
+        same ground the tile draws. Coarse levels of detail pass a coarser
+        ``cell`` (four times their grid spacing); nothing stands on them, and the river
+        line moves by well under a cell.
+        """
+        gx, gy = np.floor(x / cell), np.floor(y / cell)
+        x0, y0 = gx.min(), gy.min()
+        box = (gx.max() - x0 + 2) * (gy.max() - y0 + 2)
+        if box <= 2 * x.size:
+            # Points close together (a tile): all corners of their bounding box.
+            lx = np.arange(x0, gx.max() + 2)[None, :]
+            ly = np.arange(y0, gy.max() + 2)[:, None]
+            grid = self._river_noise(lx * cell, ly * cell)
+            width = grid.shape[1]
+            k = ((gy - y0) * width + (gx - x0)).astype(np.int64)
+            flat = grid.ravel()
+            r00, r10 = flat[k], flat[k + 1]
+            r01, r11 = flat[k + width], flat[k + width + 1]
+        else:
+            # Scattered points: each distinct corner once.
+            ix = np.concatenate([gx, gx + 1, gx, gx + 1]).astype(np.int64)
+            iy = np.concatenate([gy, gy, gy + 1, gy + 1]).astype(np.int64)
+            keys, inverse = np.unique(
+                (ix + 2**30) * 2**31 + (iy + 2**30), return_inverse=True
+            )
+            corners = self._river_noise(
+                ((keys // 2**31) - 2**30) * cell, ((keys % 2**31) - 2**30) * cell
+            )[inverse].reshape(4, -1)
+            r00, r10, r01, r11 = corners
+        fx = (x / cell - gx).astype(np.float32)
+        fy = (y / cell - gy).astype(np.float32)
+        top = r00 + (r10 - r00) * fx
+        bottom = r01 + (r11 - r01) * fx
+        r = top + (bottom - top) * fy
+        drdx = ((r10 - r00) * (1 - fy) + (r11 - r01) * fy) / cell
+        drdy = (bottom - top) / cell
+        return np.abs(r) / np.maximum(np.hypot(drdx, drdy), 1e-9)
+
+    def _river_noise(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """The river noise at world points, in warped continent coordinates."""
+        s = self.settings
+        cx, cy = domain_warp(
+            np.asarray(x, dtype=np.float64) / s.continent_period,
+            np.asarray(y, dtype=np.float64) / s.continent_period,
+            self._warp_x,
+            self._warp_y,
+            s.continent_warp,
+        )
+        scale = s.continent_period / s.river_period
+        return self._rivers.fbm(cx * scale, cy * scale)
 
     def _paint_runways(
         self, x: np.ndarray, y: np.ndarray, biome: np.ndarray, shade: np.ndarray
@@ -176,7 +310,8 @@ class TerrainGenerator:
         gy = np.round(y0 / step) + np.arange(-reach, height + reach)
         xs = gx[None, :] * step
         ys = gy[:, None] * step
-        ground_b = self.elevation(xs, ys)
+        natural, valley_b = self._natural(xs, ys, max(RIVER_LATTICE, 4 * step))
+        ground_b = self.airfields.flatten(xs, ys, natural)
         surface_b = np.maximum(ground_b, s.sea_level)
 
         inner = slice(reach, reach + height), slice(reach, reach + width)
@@ -184,7 +319,11 @@ class TerrainGenerator:
         ground = ground_b[inner]
         surface = surface_b[inner]
         inner_x, inner_y = xs[:, inner[1]], ys[inner[0], :]
-        moisture = self.moisture(inner_x, inner_y)
+        moisture = np.clip(
+            self.moisture(inner_x, inner_y) + valley_b[inner] * s.valley_moisture,
+            0.0,
+            1.0,
+        )
         jitter = self._jitter.fbm(inner_x / 40, inner_y / 40) * s.biome_jitter
         biome = classify(
             ground,

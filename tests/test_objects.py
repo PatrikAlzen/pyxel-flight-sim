@@ -92,11 +92,14 @@ def test_villages_are_on_dry_flat_land_by_water(generator, area):
         ground = np.array([h[2] for h in village.houses])
         assert np.all(ground > sea + 1.5)
         assert ground.max() - ground.min() < 12
-        angle = np.linspace(0, math.tau, 32, endpoint=False)
+        # Water within reach, looked for where placement looks: on two circles
+        # (a river can cross between the points of just one).
+        angle = np.linspace(0, math.tau, 16, endpoint=False)
+        radius = np.array([0.6, 1.0])[:, None] * 220
         ring = generator.elevation(
-            village.x + 220 * np.cos(angle), village.y + 220 * np.sin(angle)
+            village.x + radius * np.cos(angle), village.y + radius * np.sin(angle)
         )
-        assert (ring < sea).any()  # water within reach
+        assert (ring < sea).any()
 
 
 def test_lighthouses_stand_on_capes(generator, area):
