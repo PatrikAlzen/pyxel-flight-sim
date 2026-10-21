@@ -76,6 +76,8 @@ class Audio:
         self.crash = make_sound("c2a1f1d1c1a0f0d0c0", "n", "777654321", "nnnnnnnnf", 9)
         self.blip = make_sound("e3", "p", "4", "f", 6)
         self.confirm = make_sound("c3g3", "p", "4", "nf", 6)
+        self.ring = make_sound("e3g3c4", "p", "5", "nnf", 5)
+        self.finish = make_sound("c3e3g3c4rc4", "p", "6", "nnnnnf", 8)
         self.playing = SILENT
         self.last_state: FlightState | None = None
 
@@ -122,6 +124,12 @@ class Audio:
 
     def menu_confirm(self) -> None:
         pyxel.play(CH_EFFECT, self.confirm)
+
+    def ring_passed(self) -> None:
+        pyxel.play(CH_EFFECT, self.ring)
+
+    def race_finished(self) -> None:
+        pyxel.play(CH_EFFECT, self.finish)
 
     @staticmethod
     def _loop(channel: int, sound: pyxel.Sound | None) -> None:

@@ -15,6 +15,7 @@ import pyxel
 from flightsim.persist import Place
 from flightsim.render.framebuffer import screen_array
 from flightsim.render.hud import CAUTION, HUD, TEXT, shadow_text
+from flightsim.sim.race import Ring
 from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.generator import TerrainGenerator
 
@@ -102,6 +103,7 @@ def draw_map_overlay(
     places: Sequence[Place] = (),
     airfields: Sequence[Airfield] = (),
     visited: set[int] = frozenset(),
+    rings: Sequence[Ring] = (),
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
     bar and help."""
@@ -113,6 +115,10 @@ def draw_map_overlay(
             draw_wreck_marker(*world_map.to_screen(wx, wy))
     for place in places:
         draw_place_marker(*world_map.to_screen(place.x, place.y), place.name)
+    # The rest of an active time-trial course, next ring in yellow.
+    for i, ring in reversed(list(enumerate(rings))):
+        rx, ry = world_map.to_screen(ring.centre[0], ring.centre[1])
+        pyxel.circb(rx, ry, 2, pyxel.COLOR_YELLOW if i == 0 else pyxel.COLOR_WHITE)
     px, py = world_map.to_screen(x, y)
     if pyxel.frame_count // 10 % 2 == 0:
         draw_plane_marker(px, py, heading, CAUTION)

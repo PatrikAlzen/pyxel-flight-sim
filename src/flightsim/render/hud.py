@@ -11,6 +11,7 @@ Layout (256x144):
 """
 
 import math
+import time
 
 import numpy as np
 import pyxel
@@ -18,6 +19,7 @@ import pyxel
 from flightsim.render.framebuffer import screen_array
 from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 from flightsim.sim.camera import Camera
+from flightsim.sim.race import Phase, Race, format_time
 from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.world import TerrainWorld
 
@@ -286,6 +288,27 @@ class Hud:
         nx = cx + math.sin(angle) * (size / 2 - 4)
         ny = cy - math.cos(angle) * (size / 2 - 4)
         shadow_text(nx - 1, ny - 2, "N", CAUTION)
+
+    def race_panel(self, race: Race, flash: tuple[float, float] | None) -> None:
+        """Time-trial status under the compass: rings left, time, record and the
+        gain or loss against the record at the last ring (``flash``: delta, until)."""
+        y = 24
+        best = format_time(race.record[-1]) if race.record else "NONE"
+        if race.phase is Phase.READY:
+            centered_text(y, "TIME TRIAL - THROTTLE UP TO START", CAUTION)
+            centered_text(y + 8, f"{len(race.course.rings)} RINGS   BEST {best}", TEXT)
+            return
+        ring = min(race.next_ring + 1, len(race.course.rings))
+        centered_text(
+            y,
+            f"RING {ring}/{len(race.course.rings)}   {format_time(race.elapsed)}",
+            CAUTION,
+        )
+        centered_text(y + 8, f"BEST {best}", pyxel.COLOR_GRAY)
+        if flash is not None and time.perf_counter() < flash[1]:
+            delta = round(flash[0], 1) + 0.0  # + 0.0 turns -0.0 into 0.0
+            color = pyxel.COLOR_LIME if delta < 0 else WARN if delta > 0 else TEXT
+            centered_text(y + 16, f"{delta:+.1f}", color)
 
     def messages(self, plane: Aircraft, agl: float) -> None:
         blink = pyxel.frame_count // 8 % 2 == 0

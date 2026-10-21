@@ -34,6 +34,8 @@ class WorldSave:
     wrecks: list[list[float]] = field(default_factory=list)  # [x, y, z] each
     places: list[Place] = field(default_factory=list)
     visited: list[int] = field(default_factory=list)  # airfield numbers landed at
+    # Best time trial per airfield number: {"splits": [...], "ghost": [[x, y, z], ...]}.
+    records: dict[int, dict] = field(default_factory=dict)
 
     def add_place(self, x: float, y: float, altitude: float, heading: float) -> Place:
         """Save a place under the next free number; the oldest go past MAX_PLACES."""
@@ -60,7 +62,14 @@ class WorldSave:
         ]
         wrecks = [[float(v) for v in w[:3]] for w in data.get("wrecks", [])]
         visited = [int(n) for n in data.get("visited", [])]
-        return cls(seed=seed, wrecks=wrecks, places=places, visited=visited)
+        records = {
+            int(number): {
+                "splits": [float(t) for t in record["splits"]],
+                "ghost": [[float(v) for v in p[:3]] for p in record.get("ghost", [])],
+            }
+            for number, record in data.get("records", {}).items()
+        }
+        return cls(seed, wrecks=wrecks, places=places, visited=visited, records=records)
 
 
 class SaveStore:

@@ -43,6 +43,7 @@ from flightsim.render.effects import (
 )
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
+from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
     HANGAR,
     PLANE_REAR,
@@ -62,6 +63,14 @@ from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
 from flightsim.sim.particles import Particles
+from flightsim.sim.race import (
+    Course,
+    Phase,
+    Race,
+    build_course,
+    format_time,
+    ghost_position,
+)
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import Airfield, landing_report
 from flightsim.terrain.generator import TerrainGenerator
@@ -71,9 +80,10 @@ W, H = config.SCREEN_W, config.SCREEN_H
 DT = 1 / config.FPS
 MAX_PITCH = math.radians(89)  # ghost camera; it can roll freely
 TITLE_MAP_STEP = 32
-PAUSE_ITEMS = ["RESUME", "RESPAWN", "PLACES", "NEW WORLD", "QUIT"]
 PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
 TOAST_SECONDS = 2.0
+RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
+GHOST_PLANE_WIDTH = 6.0  # world units, for drawing the record run's plane
 
 
 class Mode(Enum):
@@ -149,6 +159,11 @@ class App:
         self.start_on_runway = False  # chosen on the title screen
         self.target_field: Airfield | None = None  # nearest airfield, for the HUD
         self.field_props: dict[int, dict[str, np.ndarray]] = {}  # per field number
+        self.race: Race | None = None
+        self.race_flash: tuple[float, float] | None = None  # (delta, shown until)
+        self.record_ghost: list[list[float]] | None = None  # best run, replayed
+        self.courses: dict[int, Course] = {}  # per field number
+        self.last_trial_field: Airfield | None = None  # for RETRY TIME TRIAL
         self.toast = ""
         self.toast_until = 0.0
         self.map_zoom = ZOOMS.index(16)
@@ -239,6 +254,9 @@ class App:
         self.time = 0.0
         self.ghost = False
         self.field_props.clear()
+        self.courses.clear()
+        self.race = None
+        self.last_trial_field = None
         self.target_field = None
         field = (
             self.world.generator.airfields.nearest(0.0, 0.0, config.FIELD_SEARCH_RINGS)
@@ -347,16 +365,17 @@ class App:
         if pressed(Action.PAUSE) or pressed(Action.BACK):
             self.mode = Mode.FLYING
             return
+        items = self.pause_items()
         if pressed(Action.UP):
-            self.menu_index = (self.menu_index - 1) % len(PAUSE_ITEMS)
+            self.menu_index = (self.menu_index - 1) % len(items)
             self.audio.menu_move()
         if pressed(Action.DOWN):
-            self.menu_index = (self.menu_index + 1) % len(PAUSE_ITEMS)
+            self.menu_index = (self.menu_index + 1) % len(items)
             self.audio.menu_move()
         if not pressed(Action.CONFIRM):
             return
         self.audio.menu_confirm()
-        match PAUSE_ITEMS[self.menu_index]:
+        match items[self.menu_index]:
             case "RESUME":
                 self.mode = Mode.FLYING
             case "RESPAWN":
@@ -365,11 +384,27 @@ class App:
             case "PLACES":
                 self.places_menu = True
                 self.menu_index = 0
+            case "TIME TRIAL":
+                self.start_time_trial()
+            case "RETRY TIME TRIAL":
+                self.start_time_trial(self.last_trial_field)
+            case "END TIME TRIAL":
+                self.end_race("TIME TRIAL ENDED")
+                self.mode = Mode.FLYING
             case "NEW WORLD":
                 self.close_world()
                 self.mode = Mode.TITLE
             case "QUIT":
                 pyxel.quit()
+
+    def pause_items(self) -> list[str]:
+        if self.race:
+            trial = ["END TIME TRIAL"]
+        else:
+            trial = ["TIME TRIAL"]
+            if self.last_trial_field is not None:
+                trial.append("RETRY TIME TRIAL")
+        return ["RESUME", "RESPAWN", "PLACES", *trial, "NEW WORLD", "QUIT"]
 
     def places_menu_items(self) -> list[str | Place]:
         return ["SAVE HERE", *self.saved.places, "BACK"]
@@ -379,7 +414,7 @@ class App:
         items = self.places_menu_items()
         if pressed(Action.BACK) or pressed(Action.PAUSE):
             self.places_menu = False
-            self.menu_index = PAUSE_ITEMS.index("PLACES")
+            self.menu_index = self.pause_items().index("PLACES")
             return
         if pressed(Action.UP):
             self.menu_index = (self.menu_index - 1) % len(items)
@@ -401,7 +436,7 @@ class App:
             self.save_place()
         elif item == "BACK":
             self.places_menu = False
-            self.menu_index = PAUSE_ITEMS.index("PLACES")
+            self.menu_index = self.pause_items().index("PLACES")
         else:
             self.go_to(item)
 
@@ -419,6 +454,7 @@ class App:
     def go_to(self, place: Place) -> None:
         """Fly on from a saved place; far jumps wait for the terrain there."""
         self.places_menu = False
+        self.end_race()
         here = math.hypot(place.x - self.camera.x, place.y - self.camera.y)
         if here > self.world.levels[0].safe_radius:
             self.begin_loading(place.x, place.y, place.heading, place.altitude)
@@ -436,9 +472,77 @@ class App:
             self.show_toast("COULD NOT SAVE")
             return False
 
-    def show_toast(self, text: str) -> None:
+    def show_toast(self, text: str, seconds: float = TOAST_SECONDS) -> None:
         self.toast = text
-        self.toast_until = time.perf_counter() + TOAST_SECONDS
+        self.toast_until = time.perf_counter() + seconds
+
+    # --- time trials ------------------------------------------------------
+
+    def start_time_trial(self, field: Airfield | None = None) -> None:
+        """Line up on a runway (the nearest one by default) for its ring course."""
+        if field is None:
+            field = self.world.generator.airfields.nearest(
+                self.camera.x, self.camera.y, config.FIELD_SEARCH_RINGS
+            )
+        self.mode = Mode.FLYING
+        if field is None:
+            self.show_toast("NO AIRFIELD NEARBY")
+            return
+        if field.number not in self.courses:
+            self.courses[field.number] = build_course(
+                self.world.generator.elevation, field, self.seed
+            )
+        course = self.courses[field.number]
+        self.last_trial_field = field
+        record = self.saved.records.get(field.number)
+        self.race = Race(course, record=record["splits"] if record else None)
+        self.record_ghost = record["ghost"] if record else None
+        self.race_flash = None
+        x, y = field.point(-field.length / 2 + config.RUNWAY_START_OFFSET)
+        if (
+            math.hypot(x - self.camera.x, y - self.camera.y)
+            > self.world.levels[0].safe_radius
+        ):
+            self.begin_loading(x, y, field.heading, on_ground=True)
+        else:
+            self.aircraft.park(x, y, field.heading, self.world.height_at)
+            self.ghost = False
+            self.chase.reset()
+            self.follow_aircraft()
+        self.show_toast(f"TIME TRIAL: FIELD {field.number}, {len(course.rings)} RINGS")
+
+    def end_race(self, message: str | None = None) -> None:
+        if self.race is None:
+            return
+        self.race = None
+        if message:
+            self.show_toast(message)
+
+    def ring_passed(self, ring: int) -> None:
+        race = self.race
+        if race.phase is Phase.FINISHED:
+            self.finish_race()
+            return
+        self.audio.ring_passed()
+        delta = race.delta(ring)
+        if delta is not None:
+            self.race_flash = (delta, time.perf_counter() + 2.0)
+
+    def finish_race(self) -> None:
+        race = self.race
+        self.audio.race_finished()
+        result = f"FINISHED {format_time(race.time)}"
+        if race.record is not None:
+            result += f" ({race.time - race.record[-1]:+.1f})"
+        if race.is_record:
+            self.saved.records[race.course.field_number] = {
+                "splits": [round(t, 3) for t in race.splits],
+                "ghost": race.ghost,
+            }
+            self.persist()
+            result += " NEW RECORD"
+        self.race = None
+        self.show_toast(result, RESULT_SECONDS)
 
     def update_map(self) -> None:
         if pressed(Action.MAP) or pressed(Action.BACK) or pressed(Action.PAUSE):
@@ -449,6 +553,7 @@ class App:
             self.map_zoom = min(len(ZOOMS) - 1, self.map_zoom + 1)
 
     def toggle_ghost(self) -> None:
+        self.end_race("TIME TRIAL ENDED")
         self.ghost = not self.ghost
         if not self.ghost:
             cam = self.camera
@@ -456,6 +561,7 @@ class App:
             self.aircraft.altitude = max(self.aircraft.altitude, cam.altitude)
 
     def respawn_here(self) -> None:
+        self.end_race("TIME TRIAL ENDED")
         plane = self.aircraft
         plane.respawn(plane.x, plane.y, plane.heading, self.world.height_at)
         self.chase.reset()
@@ -469,9 +575,15 @@ class App:
             self.respawn_here()
         was_crashed = plane.state is FlightState.CRASHED
         was_flying = plane.state is FlightState.FLYING
+        start = np.array([plane.x, plane.y, plane.altitude])
         plane.update(flight_controls(), DT, self.world.height_at)
         if was_flying and plane.state is FlightState.LANDED:
             self.touched_down()
+        if self.race and plane.state is not FlightState.CRASHED:
+            end = np.array([plane.x, plane.y, plane.altitude])
+            passed = self.race.update(DT, start, end, moving=plane.speed > 2.0)
+            if passed is not None:
+                self.ring_passed(passed)
         if plane.state is FlightState.CRASHED:
             if not was_crashed:
                 self.crashed()
@@ -500,6 +612,8 @@ class App:
         self.saved.wrecks = self.wrecks.positions.tolist()
         self.persist()
         self.particles.explode(site + [0.0, 0.0, 2.0])
+        if self.race:
+            self.race = None  # the crash screen says what happened
 
     def follow_aircraft(self) -> None:
         plane, cam = self.aircraft, self.camera
@@ -579,6 +693,7 @@ class App:
                     self.saved.places,
                     self.map_airfields(),
                     set(self.saved.visited),
+                    self.race.course.rings[self.race.next_ring :] if self.race else (),
                 )
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
@@ -588,7 +703,13 @@ class App:
                     else:
                         self.draw_pause_menu()
         if self.toast and time.perf_counter() < self.toast_until:
-            centered_text(32, self.toast, pyxel.COLOR_YELLOW)
+            # Below the time-trial panel while racing, under the compass otherwise.
+            racing = self.race is not None and self.mode is Mode.FLYING
+            if self.mode is Mode.PAUSED:
+                y = H - 12  # clear of the pause menu
+            else:
+                y = 52 if racing else 32
+            centered_text(y, self.toast, pyxel.COLOR_YELLOW)
         if self.show_debug and self.world:
             self.draw_debug()
 
@@ -612,6 +733,9 @@ class App:
             WRECK_FULL_SIZE_DISTANCE,
             WRECK_TILT,
         )
+        if self.race:
+            draw_rings(self.race, self.camera, self.renderer)
+            self.draw_record_ghost()
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
@@ -623,8 +747,28 @@ class App:
             self.camera,
             self.world,
             cockpit=not chase,
-            target=self.target_field,
+            target=None if self.race else self.target_field,
         )
+        if self.race:
+            ring = self.race.course.rings[self.race.next_ring]
+            draw_ring_arrow(ring, self.camera, self.renderer)
+            self.hud.race_panel(self.race, self.race_flash)
+
+    def draw_record_ghost(self) -> None:
+        """The record run, replayed as a see-through plane flying alongside."""
+        race = self.race
+        if race.phase is not Phase.RUNNING or not self.record_ghost:
+            return
+        where = ghost_position(self.record_ghost, race.elapsed, race.ghost_interval)
+        if where is None:
+            return
+        sprite = self.plane_sprite
+        full = full_size_distance(sprite, GHOST_PLANE_WIDTH, self.renderer.focal)
+        pyxel.dither(0.5)
+        draw_billboards(
+            sprite, TRANSPARENT, where[None, :], self.camera, self.renderer, full
+        )
+        pyxel.dither(1.0)
 
     def draw_airfield_props(self) -> None:
         """Hangars and windsocks at the airfields around the camera."""
@@ -718,13 +862,14 @@ class App:
         pyxel.rect(x + 1, H // 2 + 1, int((bar_w - 2) * self.progress), 4, HUD)
 
     def draw_pause_menu(self) -> None:
-        width, height = 100, 22 + len(PAUSE_ITEMS) * 10
+        items = self.pause_items()
+        width, height = 100, 22 + len(items) * 10
         x, y = (W - width) // 2, (H - height) // 2
         shaded_rect(0, 0, W, H)
         pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
         pyxel.rectb(x, y, width, height, HUD)
         centered_text(y + 5, "PAUSED", pyxel.COLOR_YELLOW)
-        for i, item in enumerate(PAUSE_ITEMS):
+        for i, item in enumerate(items):
             selected = i == self.menu_index
             label = f"> {item} <" if selected else item
             centered_text(

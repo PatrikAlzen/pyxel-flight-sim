@@ -86,3 +86,14 @@ def test_visited_airfields_round_trip(store):
     world = WorldSave(11, visited=[389, 512])
     store.save(world)
     assert store.load(11).visited == [389, 512]
+
+
+def test_time_trial_records_round_trip(store):
+    world = WorldSave(
+        12, records={657: {"splits": [10.5, 20.25], "ghost": [[1, 2, 3]]}}
+    )
+    store.save(world)
+    loaded = store.load(12)
+    assert loaded.records == {
+        657: {"splits": [10.5, 20.25], "ghost": [[1.0, 2.0, 3.0]]}
+    }

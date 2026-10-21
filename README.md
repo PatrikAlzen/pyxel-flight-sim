@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -247,7 +247,8 @@ pyxel-flight-sim/
 │       │   ├── clouds.py      # molnlager på fast höjd, skyms av terräng
 │       │   ├── sprites.py     # pixelgrafik som text (flygplanet)
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
-│       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta
+│       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta, tidsloppspanel
+│       │   ├── rings.py       # tidsloppets ringar i 3D och pilen mot nästa ring
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
@@ -569,7 +570,7 @@ Målet är riktiga platser att landa på, som också fungerar som start- och mit
 - **Rättat efteråt: hangar och vindstrut blinkade.** Testet som döljer sprites bakom terräng gjordes vid spritens fotpunkt. När marken ses snett räcker ett litet höjdfel mellan fotpunkten (exakt generatorhöjd) och den ritade marken (lagrad, grövre långt bort) för att terrängträffen i den pixeln hamnar många enheter närmare. Under en inflygning döljdes hangaren därför i ungefär halva bildrutorna och växlade synlighet 43 gånger. Nu testas spritens mitt (`billboard_visible`) och marginalen växer med avståndet (3 + 2 %). Växlingarna gick från 43 till 3 för hangaren och från 26 till 2 för vindstruten, och de som återstår är riktiga, när den försvinner bakom en kulle. Det kontrollerades mot en siktlinje genom terrängen, med överensstämmelse i 59 av 60 lägen. Ett regressionstest kontrollerar att en sprite med fotpunkten en halv enhet fel syns i varje bildruta men döljs bakom en vägg. Den nya marginalen gäller även partiklarna.
 - **Inte gjort:** bränsle (valfritt i planen). Vindstruten visar ännu ingen vindriktning, vilket kommer med vädret i 7e.
 
-#### 7c – Ringar och tidslopp *(medel, bygger på 7b)*
+#### 7c – Ringar och tidslopp ✅
 
 Målet är en utmaning med klar början och slut.
 
@@ -580,6 +581,35 @@ Målet är en utmaning med klar början och slut.
 - **Rekord** sparas per seed och bana (7a). Ett "spöke" kan sparas som planets position var tionde bildruta och visas som en genomskinlig sprite vid nästa försök.
 
 **Tester:** att det passerade segmentet räknas exakt (genom, bredvid, för högt, baklänges), att banan är deterministisk och att ingen ring ligger i terräng. **Klart när:** man kan välja *Tidslopp* vid ett flygfält, flyga banan och se sin tid jämförd med rekordet.
+
+**Resultat:**
+- **Logik** ([sim/race.py](src/flightsim/sim/race.py), ingen Pyxel):
+  - *Banbygge:* från `(seed, fältnummer)` byggs 8–15 ringar. Den första ligger 350 enheter efter banans slut och 35 enheter upp. Varje nästa ring ligger 300–600 enheter bort, i den av 5 slumpade riktningar som har lägst terräng på vägen, 40–120 enheter över den. Ringens normal pekar från föregående ring. Ringarna blir mindre (24 → 14) och svängarna skarpare (45° → 80°) ju längre från origo fältet ligger.
+  - *Passage:* planets förflyttning under en bildruta är ett segment, och ringen räknas om segmentet korsar ringens plan *framåt* inom radien. Ringarna måste tas i ordning.
+  - *`Race`* håller fasen (*READY* tills planet rullar, *RUNNING*, *FINISHED*), tiden, mellantiderna, delta mot rekordet och ett spöke (position var tredjedels sekund).
+- **Spelflöde:**
+  - Pausmenyn → *TIME TRIAL* parkerar planet vid tröskeln på närmaste fält, med laddning om fältet är långt bort.
+  - Klockan startar när planet börjar rulla, så lyftet räknas in.
+  - *RETRY TIME TRIAL* kör samma bana igen var man än är. Utan den valdes efter ett lopp oftast ett annat fält, eftersom man då har flugit därifrån.
+  - *END TIME TRIAL*, respawn, spökkamera, en sparad plats och en krasch avbryter loppet.
+  - I mål visas *FINISHED 0:31.1 (+0.7)* eller *… NEW RECORD* i 6 s. Ett nytt rekord sparas (mellantider och spöke) per fält i sparfilen.
+- **Ritning** ([render/rings.py](src/flightsim/render/rings.py)):
+  - Nästa ring är gul och den följande vit. Ringarna består av 32 punkter som projiceras, och segment bakom terräng eller kameran utelämnas. Nära ringar får dubbel linje.
+  - När nästa ring är utanför skärmen pekar en gul pil vid kanten mot den.
+  - Spöket (rekordloppet) flyger med som ett ditherat, halvgenomskinligt plan.
+  - På kartan markeras återstående ringar.
+- **HUD:**
+  - Före start: *TIME TRIAL – THROTTLE UP TO START* och *8 RINGS BEST 0:31.1*.
+  - Under loppet: *RING 3/8 0:11.8*, *BEST …*, och efter varje ring delta mot rekordet i 2 s: grönt före, rött efter.
+  - Pilen till närmaste flygfält döljs medan loppet pågår.
+  - Ljud vid varje ring och en fanfar i mål.
+- **Tester:** 15 nya (totalt 153):
+  - Passage: genom, utanför centrum, bredvid, för högt, för kort, baklänges och exakt en träff per korsning.
+  - Ringgeometri.
+  - Bana: deterministisk, form och avstånd, och ingen ring i terrängen.
+  - Lopp: fullständigt lopp, att klockan väntar på rullning, delta mot rekord, ordningen och spökets interpolering.
+  - Tidsformat och rekord i sparfilen.
+- **Provkört i riktigt fönster** med en skriptad autopilot som riktar nosen mot nästa ring: två försök på fält 657. Det första gav 0:31.1 och rekord. Det andra, med halv gas, gav *+0.7*, där spöket syntes före och deltatiden blev röd. Ritningen tog i snitt ~18 ms per bildruta under loppet.
 
 #### 7d – Träd, byar och fyrar *(stor)*
 
