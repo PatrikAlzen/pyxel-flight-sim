@@ -40,6 +40,16 @@ PROP_DRAW_DISTANCE = 900.0  # hangars and windsocks further away are not drawn
 HANGAR_WIDTH = 36.0  # world units
 WINDSOCK_WIDTH = 4.0
 
+# Trees, houses and lighthouses.
+OBJECT_DRAW_DISTANCE = 300.0  # trees and houses beyond this are not drawn
+OBJECT_LIMIT = 800  # at most this many objects per frame, the nearest ones
+LIGHTHOUSE_DRAW_DISTANCE = 2000.0  # landmarks, so visible much further out
+LAMP_PERIOD = 2.5  # seconds between lighthouse flashes...
+LAMP_ON = 0.5  # ...each lasting this long
+DISCOVER_DISTANCE = 250.0  # flying this close to a lighthouse discovers it
+COLLISION_SEARCH = 10.0  # objects within this of the plane are tested for hits
+MAP_SETTLEMENT_ZOOM = 16  # villages and lighthouses on the map up to 1:16
+
 # Free camera.
 GHOST_SPEED = 2.0  # world units per frame
 GHOST_FAST = 5.0  # speed multiplier while SHIFT is held

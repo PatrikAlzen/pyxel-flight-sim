@@ -15,6 +15,7 @@ from multiprocessing.connection import Connection
 import numpy as np
 
 from flightsim.terrain.generator import TerrainGenerator, TerrainSettings
+from flightsim.terrain.objects import Objects, place_objects
 
 TILE = 128
 
@@ -38,6 +39,8 @@ class TerrainLevel:
     heights: np.ndarray  # (size, size) float32, visible surface height
     colors: np.ndarray  # (size, size) uint8, palette indices
     step: float
+    # Whether tiles of this level carry objects (trees, houses...): finest only.
+    keeps_objects: bool = False
     # World tile coordinates (tx, ty) stored in each slot, or _NO_TILE.
     slots: np.ndarray = field(init=False)
 
@@ -49,6 +52,7 @@ class TerrainLevel:
         self.tile = min(TILE, size)
         self.tiles = size // self.tile
         self.slots = np.full((self.tiles, self.tiles, 2), _NO_TILE, dtype=np.int64)
+        self.objects: dict[tuple[int, int], Objects] = {}  # per slot (sy, sx)
 
     @property
     def size(self) -> int:
@@ -75,11 +79,12 @@ class TerrainLevel:
         return self.extent / 2 - self.tile_extent
 
     @classmethod
-    def empty(cls, size: int, step: float) -> TerrainLevel:
+    def empty(cls, size: int, step: float, keeps_objects: bool = False) -> TerrainLevel:
         return cls(
             np.zeros((size, size), dtype=np.float32),
             np.zeros((size, size), dtype=np.uint8),
             step,
+            keeps_objects,
         )
 
     def window(self, x: float, y: float) -> tuple[int, int]:
@@ -104,19 +109,48 @@ class TerrainLevel:
         rows, cols = np.nonzero(absent)
         return [(int(tx[c]), int(ty[r])) for r, c in zip(rows, cols)]
 
-    def store(self, tx: int, ty: int, heights: np.ndarray, colors: np.ndarray) -> None:
+    def store(
+        self,
+        tx: int,
+        ty: int,
+        heights: np.ndarray,
+        colors: np.ndarray,
+        objects: Objects | None = None,
+    ) -> None:
         sy, sx = ty % self.tiles, tx % self.tiles
         rows = slice(sy * self.tile, (sy + 1) * self.tile)
         cols = slice(sx * self.tile, (sx + 1) * self.tile)
         self.heights[rows, cols] = heights
         self.colors[rows, cols] = colors
         self.slots[sy, sx] = (tx, ty)
+        if self.keeps_objects:
+            self.objects[sy, sx] = objects if objects is not None else Objects.empty()
 
     def generate(
         self, generator: TerrainGenerator, tx: int, ty: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Heights and colours for world tile (tx, ty)."""
-        return generate_tile(generator, self.tile, self.step, tx, ty)
+    ) -> tuple[np.ndarray, np.ndarray, Objects | None]:
+        """Heights, colours and (if this level keeps them) objects for tile (tx, ty)."""
+        return generate_tile(
+            generator, self.tile, self.step, tx, ty, self.keeps_objects
+        )
+
+    def objects_near(self, x: float, y: float, radius: float) -> Objects:
+        """Objects stored in tiles around (x, y) that are closer than ``radius``."""
+        e = self.tile_extent
+        parts = []
+        for ty in range(math.floor((y - radius) / e), math.floor((y + radius) / e) + 1):
+            for tx in range(
+                math.floor((x - radius) / e), math.floor((x + radius) / e) + 1
+            ):
+                sy, sx = ty % self.tiles, tx % self.tiles
+                stored = tuple(int(v) for v in self.slots[sy, sx]) == (tx, ty)
+                if stored and (sy, sx) in self.objects:
+                    parts.append(self.objects[sy, sx])
+        found = Objects.concat(parts)
+        if not len(found):
+            return found
+        offset = found.position[:, :2] - np.array([x, y], dtype=np.float32)
+        return found.select(np.hypot(offset[:, 0], offset[:, 1]) <= radius)
 
     def fill(self, generator: TerrainGenerator, x: float, y: float) -> None:
         """Generate every missing tile around (x, y) right away."""
@@ -155,11 +189,17 @@ class TerrainLevel:
 
 
 def generate_tile(
-    generator: TerrainGenerator, tile: int, step: float, tx: int, ty: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Heights and colours for world tile (tx, ty) of a level with this tile size and step."""
+    generator: TerrainGenerator,
+    tile: int,
+    step: float,
+    tx: int,
+    ty: int,
+    with_objects: bool = False,
+) -> tuple[np.ndarray, np.ndarray, Objects | None]:
+    """Heights, colours and optionally objects for world tile (tx, ty) of a level
+    with this tile size and step."""
     s = generator.sample(tx * tile * step, ty * tile * step, tile, tile, step)
-    return s.height, s.color
+    return s.height, s.color, place_objects(generator, s) if with_objects else None
 
 
 # Jobs handed to each worker at once: one being generated, one ready to start.
@@ -187,7 +227,10 @@ class TerrainWorld:
         workers: int = 2,
     ) -> None:
         self.generator = generator
-        self.levels = [TerrainLevel.empty(size, step) for size, step in levels]
+        self.levels = [
+            TerrainLevel.empty(size, step, keeps_objects=i == 0)
+            for i, (size, step) in enumerate(levels)
+        ]
         self._queue: list[Job] = []  # most urgent first
         self._workers: list[tuple[multiprocessing.Process, Connection, list[Job]]] = []
         for i in range(workers):
@@ -210,6 +253,10 @@ class TerrainWorld:
     def height_at(self, x: float, y: float) -> float:
         """Ground height for collision: the same smooth surface the renderer draws."""
         return float(self.levels[0].smooth_heights(x, y))
+
+    def objects_near(self, x: float, y: float, radius: float) -> Objects:
+        """Trees, houses and lighthouses within ``radius`` of (x, y)."""
+        return self.levels[0].objects_near(x, y, radius)
 
     def stale_tiles(self, x: float, y: float) -> int:
         """Missing tiles that reach into a level's ``safe_radius`` around (x, y).
@@ -238,10 +285,10 @@ class TerrainWorld:
         """Install finished tiles and hand out the ones missing around (x, y)."""
         for _, conn, jobs in self._workers:
             while conn.poll():
-                li, tx, ty, heights, colors = conn.recv()
+                li, tx, ty, heights, colors, objects = conn.recv()
                 jobs.remove((li, tx, ty))
                 if self.levels[li].wants(tx, ty, x, y):
-                    self.levels[li].store(tx, ty, heights, colors)
+                    self.levels[li].store(tx, ty, heights, colors, objects)
 
         started = {job for _, _, jobs in self._workers for job in jobs}
         queue = []
@@ -295,6 +342,7 @@ def _work(
         while (job := conn.recv()) is not None:
             li, tx, ty = job
             tile, step = tiles[li]
-            conn.send((li, tx, ty, *generate_tile(generator, tile, step, tx, ty)))
+            data = generate_tile(generator, tile, step, tx, ty, with_objects=li == 0)
+            conn.send((li, tx, ty, *data))
     except EOFError, BrokenPipeError, KeyboardInterrupt:
         pass

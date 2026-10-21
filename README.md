@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 klara, plus full rotation: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: fas 7 (innehåll och utforskning), planerad i detalj nedan.
+> **Status:** fas 0–6 och 7a–7d klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: 7e (väder) och 7f (webb).
 
 ---
 
@@ -239,6 +239,8 @@ pyxel-flight-sim/
 │       │   ├── generator.py   # höjd, fuktighet, biom → höjd- och färgkarta per chunk
 │       │   ├── biomes.py      # biomtyper och regler för att välja biom
 │       │   ├── airfields.py   # flygfält: placering, utjämnad mark, banmålning, landningsbetyg
+│       │   ├── settlements.py # byar och fyrar: placering per cell, namn
+│       │   ├── objects.py     # träd, hus och fyrar per tile, hashning, kollision
 │       │   ├── world.py       # LOD-nivåer som ringbuffertar som följer kameran, arbetsprocesser
 │       │   └── shading.py     # lutningsbaserad ljussättning
 │       ├── render/
@@ -611,7 +613,7 @@ Målet är en utmaning med klar början och slut.
   - Tidsformat och rekord i sparfilen.
 - **Provkört i riktigt fönster** med en skriptad autopilot som riktar nosen mot nästa ring: två försök på fält 657. Det första gav 0:31.1 och rekord. Det andra, med halv gas, gav *+0.7*, där spöket syntes före och deltatiden blev röd. Ritningen tog i snitt ~18 ms per bildruta under loppet.
 
-#### 7d – Träd, byar och fyrar *(stor)*
+#### 7d – Träd, byar och fyrar ✅
 
 Målet är att världen ska kännas befolkad och ha landmärken att navigera efter.
 
@@ -621,6 +623,39 @@ Målet är att världen ska kännas befolkad och ha landmärken att navigera eft
 - **Kollision (valfritt):** träd och hus är höga en bit över marken. Om planet flyger in i ett objekts radie nära marken blir det krasch, *HIT A TREE* eller *HIT A HOUSE*. Det kontrolleras bara mot objekt i tilen under planet.
 
 **Tester:** placeringen är deterministisk och sömlös över tilegränser (objekt nära en kant hamnar i exakt en tile), det finns inga träd i vatten eller på klippa, och fyrar står bara vid kust. Ett prestandatest kör `draw_billboards` med 800 objekt och kräver under 3 ms. **Risk:** prestandan med många sprites i Python. Det mildras med hård avståndsgräns, täthetsskalning och med att objekt som täcks av terräng sorteras bort innan Pyxel-anropen.
+
+**Resultat:**
+- **Objekt per tile** ([terrain/objects.py](src/flightsim/terrain/objects.py)):
+  - Arbetsprocesserna placerar objekt när en tile i den finaste nivån genereras. Objekten skickas med tilen och lagras per plats i `TerrainLevel`, och `TerrainWorld.objects_near` hämtar dem runt kameran.
+  - Slumptalen kommer från en vektoriserad splitmix64-hash av `(seed, salt, cellx, celly)`, så varje objekt hör till exakt en tile och blir likadant i alla processer (testat: två halvor ger samma objekt som helheten).
+  - Med cellerna uträknade kostar placeringen ~3 ms per tile, cirka 10 % extra.
+- **Träd:** ett jitterrutnät om 8 × 8 enheter, med sannolikhet 75 % i skog, 70 % i taiga, 6 % på gräs och 2 % på stäpp. Taiga ger granar, och över 95 enheters höjd blir de snötäckta. Övrigt blir lövträd. Storleken varierar mellan 0,8 och 1,25. Inga träd står i vatten, på klippa eller vid banor (testat).
+- **Byar** ([terrain/settlements.py](src/flightsim/terrain/settlements.py)):
+  - En kandidat per cell om 640 × 640 enheter (55 %). Platsen ska vara 3–45 enheter över havet, plan (höjdskillnad ≤ 6 inom 50 enheter), inte torr och ha vatten inom 220 enheter. Byar hamnar inte nära flygfält.
+  - Varje by har 4–12 hus på var sin sida om en rak väg och ett namn av två stavelser (*BROTORP*, *VIKHAM*). Cirka 180 byar per 40 × 40 km.
+  - Alla kandidater testas i några få samlade terränganrop, eftersom varje anrop har hög fast kostnad.
+- **Fyrar:** en kandidat per cell om 768 × 768 enheter (80 %). Den udde med störst andel hav inom 60 enheter väljs (minst 55 %), 2–30 enheter över havet, med namn som *EDNOR LIGHT*. Cirka 100 fyrar per 40 × 40 km.
+- **Utseende:**
+  - Träd, hus och fyrar ritas med palettens terrängfärger via en egen färgnyckel (`WORLD_COLORS`), så de följer dag, skymning och natt.
+  - En ny takramp (`ROOF`) ger fyra takvarianter: röda tegel, mörka tegel, skiffer och blått. Paletten använder nu 240 av 256 färger.
+  - Fyrens lampa använder klart gult och lyser i alla ljus.
+- **Ritning:**
+  - `draw_billboards` hanterar nu flera sprites per anrop (variant och skala per objekt), sorterar allt gemensamt längst bort först och tar bara med de närmaste när taket nås.
+  - Träd och hus ritas inom 300 enheter, högst 800 per bildruta. Fyrar ritas ut till 2000 enheter som landmärken.
+  - I skymning och natt blinkar fyrljuset (0,5 s var 2,5 s) och syns ända ut till horisonten.
+  - 676 synliga träd tar 2,1 ms att rita, och ett prestandatest håller koll.
+- **Upptäckt:** att flyga inom 250 enheter från en fyr ger *DISCOVERED EDNOR LIGHT*, och fyren sparas i `landmarks`. På kartan blir den gul med namn (oupptäckta är grå).
+- **Kollision:** `objects.hit` kontrollerar objekt inom 10 enheter. Är planet inne i ett objekts radie och under dess topp blir det krasch: *HIT A TREE*, *HIT A HOUSE* eller *HIT THE LIGHTHOUSE*. Kraschvy, vrak och rök fungerar som vanligt.
+- **Kartan** visar bynamn (orange ruta och namn) och fyrar vid zoom 1:16 och närmare. Längre ut blir det för många celler att räkna ut medan kartan öppnas.
+- **Tester:** 12 nya (totalt 165):
+  - Placering: hashning, att träd växer i skog men inte i vatten eller på klippa, sömlöshet över tiles och att inga träd står vid banor.
+  - Byar och fyrar: byar på plan torr mark nära vatten, fyrar på uddar, att placeringen inte beror på ordning och att hus och fyrar hamnar i rätt tile.
+  - Lagring och kollision: att nivån lagrar objekt med sina tiles och kollisionsregeln.
+  - Prestanda: att rita 800 objekt.
+  - Sparning: upptäckta fyrar.
+- **Provkört i riktigt fönster** med en skriptad tur: lågt över en skog med snötäckta granar, byn BROTORP (12 hus), EDNOR LIGHT på natten med blinkande lampa och *DISCOVERED*, kartan, och planet rakt in i ett träd (*HIT A TREE*). Ritningen tog i snitt ~23 ms per bildruta med upp till ~190 objekt, på en dag då datorn var ungefär dubbelt så långsam som vanligt (samma gamla kod tog 27 ms per tile i stället för 13,8 ms).
+- **Rättat efteråt: objekten lutade med kameran.** Sprites ritades upprätt i *skärmens* koordinater, så när man rollade lutade träd, hus, fyrar, hangarer och vrak med kameran i stället för att stå på marken. Nu projiceras både foten och toppen av varje objekt (`standing_pose`). Spriten centreras mitt emellan och roteras så att dess upp pekar från foten mot toppen, det vill säga längs världens lodlinje. Det gäller vid roll, i ryggläge och vid branta vyer. Tester för 0°, ±30°, ±90° och 180° roll, och kontrollerat i fönster vid 50° och 90° bank.
+- **Inte gjort:** ingen synlig väg genom byarna, bara husens placering längs den. Byar och fyrar syns inte på minikartan.
 
 #### 7e – Väder: vind, turbulens och regn *(medel)*
 

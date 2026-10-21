@@ -97,3 +97,8 @@ def test_time_trial_records_round_trip(store):
     assert loaded.records == {
         657: {"splits": [10.5, 20.25], "ghost": [[1.0, 2.0, 3.0]]}
     }
+
+
+def test_landmarks_round_trip(store):
+    store.save(WorldSave(13, landmarks=[412, 98]))
+    assert store.load(13).landmarks == [412, 98]

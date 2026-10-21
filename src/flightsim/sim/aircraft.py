@@ -375,6 +375,11 @@ class Aircraft:
             return "NOSED INTO THE GROUND"
         return ""
 
+    def crash(self, reason: str) -> None:
+        """End the flight here, e.g. on hitting something the model does not know about."""
+        if self.state is not FlightState.CRASHED:
+            self._crash(reason)
+
     def _crash(self, reason: str) -> None:
         self.state = FlightState.CRASHED
         self.crash_reason = reason

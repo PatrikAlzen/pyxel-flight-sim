@@ -40,16 +40,24 @@ from flightsim.render.effects import (
     draw_billboards,
     draw_particles,
     full_size_distance,
+    in_front_of_terrain,
+    project_points,
 )
 from flightsim.render.framebuffer import image_array, screen_array
 from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
 from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
+    BROADLEAF,
     HANGAR,
+    LIGHTHOUSE,
     PLANE_REAR,
     PLANE_WRECK,
+    SNOWY_SPRUCE,
+    SPRUCE,
     TRANSPARENT,
     WINDSOCK,
+    WORLD_COLORS,
+    house_images,
     make_image,
 )
 from flightsim.render.voxel import VoxelRenderer
@@ -74,6 +82,8 @@ from flightsim.sim.race import (
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import Airfield, landing_report
 from flightsim.terrain.generator import TerrainGenerator
+from flightsim.terrain.objects import HEIGHT, Kind, Objects, hit
+from flightsim.terrain.settlements import Lighthouse
 from flightsim.terrain.world import TerrainWorld
 
 W, H = config.SCREEN_W, config.SCREEN_H
@@ -163,6 +173,7 @@ class App:
         self.race_flash: tuple[float, float] | None = None  # (delta, shown until)
         self.record_ghost: list[list[float]] | None = None  # best run, replayed
         self.courses: dict[int, Course] = {}  # per field number
+        self.objects_drawn = 0  # trees, houses and lighthouses in the last frame
         self.last_trial_field: Airfield | None = None  # for RETRY TIME TRIAL
         self.toast = ""
         self.toast_until = 0.0
@@ -190,6 +201,20 @@ class App:
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
             "windsock": (make_image(WINDSOCK), config.WINDSOCK_WIDTH),
         }
+        # Trees (one image per Tree variant), houses (one per roof) and the
+        # lighthouse, in that order; OBJECT_SPRITE_BASE maps a Kind to its first.
+        self.object_sprites = [
+            make_image(BROADLEAF, WORLD_COLORS),
+            make_image(SPRUCE, WORLD_COLORS),
+            make_image(SNOWY_SPRUCE, WORLD_COLORS),
+            *house_images(),
+            make_image(LIGHTHOUSE, WORLD_COLORS),
+        ]
+        kinds = [Kind.TREE] * 3 + [Kind.HOUSE] * 4 + [Kind.LIGHTHOUSE]
+        self.object_full_size = [
+            HEIGHT[kind] * self.renderer.focal / img.height
+            for kind, img in zip(kinds, self.object_sprites)
+        ]
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
         pyxel.run(self.update, self.draw)
@@ -344,6 +369,7 @@ class App:
             self.target_field = self.world.generator.airfields.nearest(
                 self.camera.x, self.camera.y, config.FIELD_SEARCH_RINGS
             )
+            self.discover_landmarks()
         self.particles.update(DT, self.clouds.settings.drift)
         cam = self.camera
         self.particles.smoulder(
@@ -579,6 +605,8 @@ class App:
         plane.update(flight_controls(), DT, self.world.height_at)
         if was_flying and plane.state is FlightState.LANDED:
             self.touched_down()
+        if plane.state is not FlightState.CRASHED:
+            self.check_object_collision()
         if self.race and plane.state is not FlightState.CRASHED:
             end = np.array([plane.x, plane.y, plane.altitude])
             passed = self.race.update(DT, start, end, moving=plane.speed > 2.0)
@@ -589,6 +617,38 @@ class App:
                 self.crashed()
             self.particles.burn(self.wrecks.latest + [0.0, 0.0, 3.0], DT)
         self.follow_aircraft()
+
+    def check_object_collision(self) -> None:
+        """Crash into a tree, house or lighthouse if the plane is inside one."""
+        plane = self.aircraft
+        near = self.world.objects_near(plane.x, plane.y, config.COLLISION_SEARCH)
+        bottom = plane.altitude - plane.settings.gear_height
+        match hit(near, plane.x, plane.y, bottom):
+            case Kind.TREE:
+                plane.crash("HIT A TREE")
+            case Kind.HOUSE:
+                plane.crash("HIT A HOUSE")
+            case Kind.LIGHTHOUSE:
+                plane.crash("HIT THE LIGHTHOUSE")
+
+    def lighthouses_near(self, radius: float) -> list[Lighthouse]:
+        cam = self.camera
+        return self.world.generator.settlements.lighthouses(
+            cam.x - radius, cam.y - radius, cam.x + radius, cam.y + radius
+        )
+
+    def discover_landmarks(self) -> None:
+        """Flying close to a lighthouse for the first time discovers it."""
+        plane = self.aircraft
+        for light in self.lighthouses_near(config.DISCOVER_DISTANCE):
+            near = (
+                math.hypot(light.x - plane.x, light.y - plane.y)
+                < config.DISCOVER_DISTANCE
+            )
+            if near and light.number not in self.saved.landmarks:
+                self.saved.landmarks.append(light.number)
+                self.persist()
+                self.show_toast(f"DISCOVERED {light.name}")
 
     def touched_down(self) -> None:
         """Grade a landing if it was on a runway, and remember the airfield."""
@@ -694,6 +754,8 @@ class App:
                     self.map_airfields(),
                     set(self.saved.visited),
                     self.race.course.rings[self.race.next_ring :] if self.race else (),
+                    *self.map_settlements(),
+                    set(self.saved.landmarks),
                 )
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
@@ -721,6 +783,7 @@ class App:
         self.render_time.add(time.perf_counter() - start)
         draw_particles(self.particles, self.camera, self.renderer)
         self.draw_airfield_props()
+        self.draw_objects()
         nearby = self.wrecks.near(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
@@ -770,6 +833,49 @@ class App:
         )
         pyxel.dither(1.0)
 
+    def draw_objects(self) -> None:
+        """Trees and houses near the camera, and lighthouses further out."""
+        cam = self.camera
+        near = self.world.objects_near(cam.x, cam.y, config.OBJECT_DRAW_DISTANCE)
+        near = near.select(near.kind != Kind.LIGHTHOUSE)  # drawn below, further out
+        lights = self.lighthouses_near(config.LIGHTHOUSE_DRAW_DISTANCE)
+        if lights:
+            towers = Objects(
+                np.array([[t.x, t.y, t.z] for t in lights], dtype=np.float32),
+                np.full(len(lights), Kind.LIGHTHOUSE, np.uint8),
+                np.zeros(len(lights), np.uint8),
+                np.ones(len(lights), np.float32),
+            )
+            near = Objects.concat([near, towers])
+        base = np.array([0, 3, 7])  # first sprite of each Kind
+        self.objects_drawn = draw_billboards(
+            self.object_sprites,
+            TRANSPARENT,
+            near.position,
+            cam,
+            self.renderer,
+            self.object_full_size,
+            variants=base[near.kind] + near.variant,
+            scales=near.scale,
+            limit=config.OBJECT_LIMIT,
+        )
+        if palette.LIGHTINGS[self.lighting] is not palette.DAY:
+            self.draw_lighthouse_lamps(lights)
+
+    def draw_lighthouse_lamps(self, lights: list[Lighthouse]) -> None:
+        """Blinking lamps, visible from far away at dusk and night."""
+        if not lights or self.time % config.LAMP_PERIOD > config.LAMP_ON:
+            return
+        lamps = np.array(
+            [[t.x, t.y, t.z + HEIGHT[Kind.LIGHTHOUSE] * 0.93] for t in lights]
+        )
+        sx, sy, depth = project_points(self.camera, lamps, self.renderer.focal, W, H)
+        seen = (depth > 1.0) & (sx >= 0) & (sx < W) & (sy >= 0) & (sy < H)
+        seen &= in_front_of_terrain(self.renderer, self.camera, lamps, sx, sy)
+        for x, y in zip(sx[seen], sy[seen]):
+            pyxel.circ(x, y, 1, pyxel.COLOR_YELLOW)
+            pyxel.pset(x, y, pyxel.COLOR_WHITE)
+
     def draw_airfield_props(self) -> None:
         """Hangars and windsocks at the airfields around the camera."""
         cam = self.camera
@@ -795,6 +901,16 @@ class App:
                 props.setdefault(kind, []).append([x, y, z])
             self.field_props[field.number] = {k: np.array(v) for k, v in props.items()}
         return self.field_props[field.number]
+
+    def map_settlements(self) -> tuple[list, list]:
+        """Villages and lighthouses on the map, when zoomed in enough to be cheap."""
+        step = ZOOMS[self.map_zoom]
+        if step > config.MAP_SETTLEMENT_ZOOM:
+            return [], []
+        plane, s = self.aircraft, self.world.generator.settlements
+        rx, ry = W / 2 * step, H / 2 * step
+        box = (plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry)
+        return s.villages(*box), s.lighthouses(*box)
 
     def map_airfields(self) -> list[Airfield]:
         """Airfields in and around the area the map shows."""
@@ -910,6 +1026,7 @@ class App:
             f"RENDER {self.render_time.ms:4.1f}MS  {fps:4.1f}FPS  SEED {self.seed}",
             f"TILES PENDING {self.world.pending}  STALE {self.world.stale_tiles(cam.x, cam.y)}",
             f"{plane.state.name}  LIFT {plane.lift:.2f}  SINK {plane.sink:.1f}",
+            f"OBJECTS {self.objects_drawn}",
         ]
         for i, line in enumerate(lines):
             shadow_text(2, 24 + i * 7, line, TEXT)

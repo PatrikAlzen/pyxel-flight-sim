@@ -15,6 +15,7 @@ from flightsim.terrain import shading
 from flightsim.terrain.airfields import Airfield, Airfields, AirfieldSettings
 from flightsim.terrain.biomes import Biome, classify
 from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
+from flightsim.terrain.settlements import Settlements
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,9 @@ class TerrainGenerator:
             self.natural_elevation,
             self.settings.sea_level,
             self.settings.airfields,
+        )
+        self.settlements = Settlements(
+            seed, self.elevation, self.moisture, self.settings.sea_level, self.airfields
         )
 
     def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:

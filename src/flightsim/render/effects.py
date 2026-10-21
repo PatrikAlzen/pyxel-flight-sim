@@ -5,6 +5,8 @@ the renderer's per-pixel terrain distance, so smoke rising behind a ridge is
 cut off by it.
 """
 
+from collections.abc import Sequence
+
 import numpy as np
 import pyxel
 
@@ -55,7 +57,10 @@ def in_front_of_terrain(
 
 
 def billboard_visible(
-    renderer: VoxelRenderer, camera: Camera, positions: np.ndarray, height: float
+    renderer: VoxelRenderer,
+    camera: Camera,
+    positions: np.ndarray,
+    height: float | np.ndarray,
 ) -> np.ndarray:
     """Whether sprites ``height`` world units tall standing at ``positions`` are
     in front of the terrain.
@@ -65,7 +70,8 @@ def billboard_visible(
     terrain hit at that pixel many units nearer, and the sprite would blink
     in and out as the camera moves.
     """
-    middle = positions + [0.0, 0.0, height / 2]
+    middle = np.array(positions, dtype=float)
+    middle[:, 2] += np.asarray(height) / 2
     w, h = renderer.width, renderer.height
     sx, sy, depth = project_points(camera, middle, renderer.focal, w, h)
     return (depth > 1.0) & in_front_of_terrain(renderer, camera, middle, sx, sy)
@@ -134,46 +140,99 @@ def full_size_distance(sprite: pyxel.Image, world_width: float, focal: float) ->
 
 
 def draw_billboards(
-    sprite: pyxel.Image,
+    sprite: pyxel.Image | Sequence[pyxel.Image],
     colkey: int,
     positions: np.ndarray,
     camera: Camera,
     renderer: VoxelRenderer,
-    full_size: float,
+    full_size: float | Sequence[float],
     tilt: float = 0.0,
-) -> None:
+    variants: np.ndarray | None = None,
+    scales: np.ndarray | None = None,
+    limit: int | None = None,
+) -> int:
     """Sprites standing on world points (rows of ``positions``), facing the camera.
 
-    Each is drawn 1:1 at distance ``full_size`` and scaled for its own
-    distance, hidden behind terrain and drawn far to near. Sprites too far
-    away to be more than a couple of pixels are skipped. Draw particles first:
-    flames start right at a burning wreck, and half of them would otherwise be
-    in front of it and hide it.
+    ``sprite`` is one image or a list chosen per point by ``variants``. Each
+    image is drawn 1:1 at distance ``full_size`` (one value, or one per image),
+    times the point's entry in ``scales``. Sprites are scaled for their own
+    distance, hidden behind terrain and drawn far to near, all kinds mixed, so
+    nearer ones cover further ones. Sprites too far away to be more than a
+    couple of pixels are skipped, and with ``limit`` only that many of the
+    nearest are drawn. Returns how many were drawn.
+
+    Draw particles first: flames start right at a burning wreck, and half of
+    them would otherwise be in front of it and hide it.
     """
     if not len(positions):
-        return
+        return 0
+    sprites = [sprite] if isinstance(sprite, pyxel.Image) else list(sprite)
+    fulls = np.broadcast_to(np.asarray(full_size, dtype=float), (len(sprites),))
+    which = (
+        np.zeros(len(positions), np.int64)
+        if variants is None
+        else variants.astype(np.int64)
+    )
+    full = fulls[which] * (1.0 if scales is None else scales)
+    widths = np.array([img.width for img in sprites])[which]
+    heights = np.array([img.height for img in sprites])[which]
+
     w, h = renderer.width, renderer.height
     sx, sy, depth = project_points(camera, positions, renderer.focal, w, h)
-    scale = full_size / np.where(depth > 0, depth, np.inf)
-    size = sprite.width * scale
+    scale = full / np.where(depth > 0, depth, np.inf)
+    size = widths * scale
     visible = (depth > 1.0) & (scale >= MIN_SCALE)
     visible &= (sx > -size) & (sx < w + size) & (sy > -size) & (sy < h + size)
-    height = sprite.height * full_size / renderer.focal  # world units
-    visible &= billboard_visible(renderer, camera, positions, height)
-    for i in np.flatnonzero(visible)[np.argsort(-depth[visible])]:
-        k = min(4.0, float(scale[i]))
-        # Pyxel scales about the middle of the copied area; lift it so it rests
-        # on the ground instead of being half buried.
-        centre_y = float(sy[i]) - sprite.height * k / 2
+    world_height = heights * full / renderer.focal
+    visible &= billboard_visible(renderer, camera, positions, world_height)
+    centre_x, centre_y, angle, upright = standing_pose(
+        camera, positions, world_height, renderer
+    )
+    visible &= upright
+    shown = np.flatnonzero(visible)
+    if limit is not None and len(shown) > limit:
+        shown = shown[np.argpartition(depth[shown], limit)[:limit]]
+    for i in shown[np.argsort(-depth[shown])]:
+        img = sprites[which[i]]
+        # Pyxel scales and rotates about the middle of the copied area, so
+        # place that middle halfway between the foot and the top.
         pyxel.blt(
-            float(sx[i]) - sprite.width / 2,
-            centre_y - sprite.height / 2,
-            sprite,
+            float(centre_x[i]) - img.width / 2,
+            float(centre_y[i]) - img.height / 2,
+            img,
             0,
             0,
-            sprite.width,
-            sprite.height,
+            img.width,
+            img.height,
             colkey,
-            rotate=tilt,
-            scale=k,
+            rotate=float(angle[i]) + tilt,
+            scale=min(4.0, float(scale[i])),
         )
+    return len(shown)
+
+
+def standing_pose(
+    camera: Camera,
+    positions: np.ndarray,
+    height: np.ndarray | float,
+    renderer: VoxelRenderer,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Where and how to draw sprites standing upright on the ground.
+
+    A sprite has to stand along the world's vertical, not the screen's, or it
+    leans with the camera when it rolls. The foot and the top of each object
+    are projected; the sprite is centred halfway between them and rotated so
+    its up points from the foot to the top.
+
+    Returns the screen centre (x, y), the clockwise rotation in degrees (Pyxel's
+    convention) and whether both ends are in front of the camera.
+    """
+    w, h = renderer.width, renderer.height
+    tops = np.array(positions, dtype=float)
+    tops[:, 2] += np.asarray(height)
+    fx, fy, foot_depth = project_points(camera, positions, renderer.focal, w, h)
+    tx, ty, top_depth = project_points(camera, tops, renderer.focal, w, h)
+    upright = (foot_depth > 1.0) & (top_depth > 1.0)
+    dx, dy = tx - fx, ty - fy
+    angle = np.degrees(np.arctan2(dx, -dy))
+    return (fx + tx) / 2, (fy + ty) / 2, np.nan_to_num(angle), upright

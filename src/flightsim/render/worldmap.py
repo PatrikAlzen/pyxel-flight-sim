@@ -18,6 +18,7 @@ from flightsim.render.hud import CAUTION, HUD, TEXT, shadow_text
 from flightsim.sim.race import Ring
 from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.generator import TerrainGenerator
+from flightsim.terrain.settlements import Lighthouse, Village
 
 ZOOMS = [4, 8, 16, 32, 64]  # world units per pixel
 
@@ -104,10 +105,23 @@ def draw_map_overlay(
     airfields: Sequence[Airfield] = (),
     visited: set[int] = frozenset(),
     rings: Sequence[Ring] = (),
+    villages: Sequence[Village] = (),
+    lighthouses: Sequence[Lighthouse] = (),
+    discovered: set[int] = frozenset(),
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
     bar and help."""
     world_map.draw(x, y, step)
+    for village in villages:
+        vx, vy = world_map.to_screen(village.x, village.y)
+        pyxel.rect(vx - 1, vy - 1, 3, 3, pyxel.COLOR_ORANGE)
+        shadow_text(vx - len(village.name) * 2, vy + 3, village.name, pyxel.COLOR_PEACH)
+    for light in lighthouses:
+        lx, ly = world_map.to_screen(light.x, light.y)
+        color = pyxel.COLOR_YELLOW if light.number in discovered else pyxel.COLOR_GRAY
+        pyxel.tri(lx, ly - 4, lx - 2, ly + 1, lx + 2, ly + 1, color)
+        if light.number in discovered:
+            shadow_text(lx + 4, ly - 3, light.name, pyxel.COLOR_YELLOW)
     for field in airfields:
         draw_runway_marker(world_map, field, field.number in visited)
     if wrecks is not None:

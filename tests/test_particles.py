@@ -124,3 +124,27 @@ def test_billboard_on_the_ground_does_not_blink_at_a_shallow_angle():
     camera = Camera(x=0.0, y=0.0, altitude=40.0)
     renderer.render(out, [level], camera)
     assert not billboard_visible(renderer, camera, sprite, height=12.0)[0]
+
+
+@pytest.mark.parametrize(
+    ("roll", "expected"),
+    [(0.0, 0.0), (90.0, -90.0), (-90.0, 90.0), (180.0, 180.0), (30.0, -30.0)],
+)
+def test_billboards_stand_on_the_ground_when_the_camera_rolls(roll, expected):
+    """Sprites must stay upright in the world, not in the screen: rolling the
+    camera right makes the world's up point left on screen."""
+    import math
+
+    from flightsim.render.effects import standing_pose
+    from flightsim.render.voxel import VoxelRenderer
+
+    renderer = VoxelRenderer(256, 144)
+    camera = Camera(altitude=20.0, roll=math.radians(roll))
+    tree = np.array([[0.0, -200.0, 15.0]])  # straight ahead, a little below
+    cx, cy, angle, upright = standing_pose(camera, tree, 10.0, renderer)
+    assert upright[0]
+    difference = (angle[0] - expected + 180) % 360 - 180
+    assert abs(difference) < 1.0
+    # The centre sits halfway up the tree, which is right where it projects.
+    sx, sy, _ = camera.project(tree[0] + [0, 0, 5.0], renderer.focal, 256, 144)
+    assert cx[0] == pytest.approx(sx) and cy[0] == pytest.approx(sy)

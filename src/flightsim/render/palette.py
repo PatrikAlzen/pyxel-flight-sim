@@ -47,6 +47,7 @@ RAMPS: dict[Biome, tuple[int, int]] = {
     Biome.ROCK: (0x34302C, 0x9C948A),
     Biome.SNOW: (0x7E8EAA, 0xFFFFFF),
     Biome.RUNWAY: (0x26262C, 0xE6E6DC),  # asphalt; the top shade is the paint
+    Biome.ROOF: (0x4A1A12, 0xD8603E),  # red tiles
 }
 
 

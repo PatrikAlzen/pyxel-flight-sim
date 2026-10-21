@@ -36,6 +36,7 @@ class WorldSave:
     visited: list[int] = field(default_factory=list)  # airfield numbers landed at
     # Best time trial per airfield number: {"splits": [...], "ghost": [[x, y, z], ...]}.
     records: dict[int, dict] = field(default_factory=dict)
+    landmarks: list[int] = field(default_factory=list)  # lighthouse numbers discovered
 
     def add_place(self, x: float, y: float, altitude: float, heading: float) -> Place:
         """Save a place under the next free number; the oldest go past MAX_PLACES."""
@@ -69,7 +70,15 @@ class WorldSave:
             }
             for number, record in data.get("records", {}).items()
         }
-        return cls(seed, wrecks=wrecks, places=places, visited=visited, records=records)
+        landmarks = [int(n) for n in data.get("landmarks", [])]
+        return cls(
+            seed,
+            wrecks=wrecks,
+            places=places,
+            visited=visited,
+            records=records,
+            landmarks=landmarks,
+        )
 
 
 class SaveStore:
