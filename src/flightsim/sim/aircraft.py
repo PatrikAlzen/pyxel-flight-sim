@@ -212,7 +212,17 @@ class Aircraft:
         self.crash_reason = ""
         self.state_time = 0.0
 
-    def update(self, controls: Controls, dt: float, ground: Ground) -> None:
+    def update(
+        self,
+        controls: Controls,
+        dt: float,
+        ground: Ground,
+        wind: tuple[float, float] = (0.0, 0.0),
+        bump: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
+        """Advance one step. ``wind`` (x, y velocity) carries the plane along while
+        it flies; on the ground the wheels hold it. ``bump`` is turbulence: extra
+        pitch and roll rates (radians per second) on top of the stick's."""
         self.state_time += dt
         if self.state is FlightState.CRASHED:
             return
@@ -225,7 +235,7 @@ class Aircraft:
         if on_ground:
             self._steer_on_ground(controls, dt)
         else:
-            self._steer_in_air(controls, dt)
+            self._steer_in_air(controls, dt, bump)
         self._accelerate(controls, dt, on_ground)
 
         # Lift has to hold up the part of the weight the flight path does not
@@ -240,8 +250,9 @@ class Aircraft:
             self.sink += (s.gravity * deficit - self.sink * s.sink_damping) * dt
             self.sink = max(self.sink, 0.0)
 
-        self.x += f[0] * self.speed * dt
-        self.y += f[1] * self.speed * dt
+        drift = (0.0, 0.0) if on_ground else wind
+        self.x += (f[0] * self.speed + drift[0]) * dt
+        self.y += (f[1] * self.speed + drift[1]) * dt
         climb = self.speed * f[2] - self.sink
         if on_ground and self.speed < s.takeoff_speed:
             climb = min(climb, 0.0)
@@ -274,15 +285,17 @@ class Aircraft:
         pitch = _clamp(self.pitch + self.pitch_rate * dt, 0, s.max_ground_pitch)
         self.forward, _, self.up = euler_to_basis(heading, pitch, 0.0)
 
-    def _steer_in_air(self, controls: Controls, dt: float) -> None:
+    def _steer_in_air(
+        self, controls: Controls, dt: float, bump: tuple[float, float]
+    ) -> None:
         s = self.settings
         authority = self._follow_stick(controls, dt, roll=True)
         f, u = self.forward, self.up
 
         # Pitch about the wings, roll about the nose, yaw about the canopy.
-        f, u = _turn(f, u, self.pitch_rate * dt)
+        f, u = _turn(f, u, (self.pitch_rate + bump[0]) * dt)
         right = np.cross(u, f)
-        u, right = _turn(u, right, self.roll_rate * dt)
+        u, right = _turn(u, right, (self.roll_rate + bump[1]) * dt)
         f, right = _turn(f, right, controls.yaw * s.max_yaw_rate * authority * dt)
 
         # Help the wings back to level when the stick is let go, but only near

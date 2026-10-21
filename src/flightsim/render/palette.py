@@ -13,7 +13,7 @@ Layout of the 256 palette slots:
   colour, so fully fogged terrain melts into the sky) up to the zenith.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pyxel
@@ -59,12 +59,33 @@ class Lighting:
     tint: tuple[float, float, float]  # multiplies terrain RGB
     fog: int  # haze colour, also the sky at the horizon
     zenith: int  # sky colour straight up
+    grey: float = 0.0  # 0..1, how washed out the terrain colours are
 
 
 DAY = Lighting("DAY", (1.0, 1.0, 1.0), FOG_COLOR, SKY_ZENITH)
 DUSK = Lighting("DUSK", (1.0, 0.72, 0.58), 0xE8A27A, 0x3A2E6A)
 NIGHT = Lighting("NIGHT", (0.3, 0.36, 0.55), 0x1E2A48, 0x05070F)
 LIGHTINGS = [DAY, DUSK, NIGHT]
+
+# Grey cloud cover: the sky and haze it turns towards, before time-of-day tint.
+OVERCAST_FOG = 0x9AA0A8
+OVERCAST_ZENITH = 0x6A707A
+
+
+def overcast(lighting: Lighting, amount: float) -> Lighting:
+    """``lighting`` under cloud cover, ``amount`` 0 (none) .. 1 (heavy grey sky)."""
+    if amount <= 0:
+        return lighting
+    dim = 1.0 - 0.3 * amount
+    return replace(
+        lighting,
+        tint=tuple(t * dim for t in lighting.tint),
+        fog=_lerp_rgb(lighting.fog, _tint(OVERCAST_FOG, lighting.tint), amount),
+        zenith=_lerp_rgb(
+            lighting.zenith, _tint(OVERCAST_ZENITH, lighting.tint), amount
+        ),
+        grey=max(lighting.grey, 0.5 * amount),
+    )
 
 
 def biome_color(biome: np.ndarray | int, shade: np.ndarray | int) -> np.ndarray:
@@ -82,6 +103,14 @@ def _lerp_rgb(a: int, b: int, t: float) -> int:
     return (channels[0] << 16) | (channels[1] << 8) | channels[2]
 
 
+def _grey(rgb: int, amount: float) -> int:
+    if amount <= 0:
+        return rgb
+    r, g, b = ((rgb >> s) & 0xFF for s in (16, 8, 0))
+    luma = round(0.3 * r + 0.59 * g + 0.11 * b)
+    return _lerp_rgb(rgb, luma * 0x010101, amount)
+
+
 def _tint(rgb: int, tint: tuple[float, float, float]) -> int:
     channels = [
         min(255, round(((rgb >> s) & 0xFF) * t)) for s, t in zip((16, 8, 0), tint)
@@ -95,7 +124,10 @@ def colors(lighting: Lighting = DAY) -> list[int]:
     for biome in Biome:
         dark, light = RAMPS[biome]
         terrain += [
-            _tint(_lerp_rgb(dark, light, i / (SHADES - 1)), lighting.tint)
+            _tint(
+                _grey(_lerp_rgb(dark, light, i / (SHADES - 1)), lighting.grey),
+                lighting.tint,
+            )
             for i in range(SHADES)
         ]
 

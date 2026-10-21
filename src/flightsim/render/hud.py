@@ -37,6 +37,7 @@ TAPE_MID = TAPE_TOP + TAPE_HEIGHT // 2
 
 MINIMAP_SIZE = 40
 MINIMAP_SCALE = 16.0  # world units per minimap pixel
+TURBULENCE_WARNING = 0.45  # turbulence (0..1) above which the HUD warns
 
 
 def shadow_text(x: float, y: float, text: str, color: int) -> None:
@@ -81,10 +82,13 @@ class Hud:
         world: TerrainWorld,
         cockpit: bool = True,
         target: Airfield | None = None,
+        wind: tuple[float, float] = (0.0, 0.0),
+        turbulence: float = 0.0,
     ) -> None:
         """Draw all instruments. The pitch ladder and aircraft symbol only make
         sense looking out of the cockpit, so the chase view leaves them out.
-        ``target`` is shown on the compass with its distance."""
+        ``target`` is shown on the compass with its distance; ``wind`` is the
+        wind velocity and ``turbulence`` 0..1 how bumpy the air is."""
         ground = world.height_at(plane.x, plane.y)
         agl = plane.altitude - plane.settings.gear_height - ground
         self.minimap(plane, world)  # writes pixels directly, so it goes first
@@ -100,7 +104,10 @@ class Hud:
         self.speed_tape(plane)
         self.altitude_tape(plane, agl)
         self.throttle(plane.throttle)
+        self.wind(plane, wind)
         self.messages(plane, agl)
+        if turbulence > TURBULENCE_WARNING and pyxel.frame_count // 8 % 2 == 0:
+            centered_text(pyxel.height // 2 + 22, "TURBULENCE", CAUTION)
 
     def pitch_ladder(self, camera: Camera) -> None:
         """Rungs every 10 degrees of elevation, straight ahead along the heading.
@@ -274,6 +281,30 @@ class Hud:
         pyxel.rect(x + 1, bottom - 1 - fill, 4, fill, HUD)
         pyxel.rectb(x, bottom - height, 6, height, HUD)
         shadow_text(x + 9, bottom - 6, f"THR {throttle * 100:3.0f}%", HUD)
+
+    def wind(self, plane: Aircraft, wind: tuple[float, float]) -> None:
+        """Wind under the speed tape: an arrow pointing where it blows, relative
+        to the nose (up = tailwind), and its speed."""
+        speed = math.hypot(*wind)
+        x, y = 10, TAPE_TOP + TAPE_HEIGHT + 10
+        if speed < 0.5:
+            shadow_text(x - 4, y - 2, "CALM", HUD)
+            return
+        towards = math.atan2(wind[0], -wind[1]) - plane.heading
+        dx, dy = math.sin(towards), -math.cos(towards)
+        tip_x, tip_y = x + dx * 4, y + dy * 4
+        pyxel.line(x - dx * 4, y - dy * 4, tip_x, tip_y, HUD)
+        side_x, side_y = -dy * 2, dx * 2
+        pyxel.tri(
+            tip_x + dx,
+            tip_y + dy,
+            tip_x - dx * 2 + side_x,
+            tip_y - dy * 2 + side_y,
+            tip_x - dx * 2 - side_x,
+            tip_y - dy * 2 - side_y,
+            HUD,
+        )
+        shadow_text(x + 7, y - 2, f"W{speed:3.0f}", HUD)
 
     def minimap(self, plane: Aircraft, world: TerrainWorld) -> None:
         """Terrain around the plane, rotated so the nose points up."""

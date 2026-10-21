@@ -39,6 +39,8 @@ RUNWAY_START_OFFSET = 20.0  # starting on a runway: this far in from its end
 PROP_DRAW_DISTANCE = 900.0  # hangars and windsocks further away are not drawn
 HANGAR_WIDTH = 36.0  # world units
 WINDSOCK_WIDTH = 4.0
+OVERCAST_STEPS = 8  # palette rebuilds as the sky greys over
+TURBULENCE_PROBE = 20.0  # how far around the plane the ground slope is measured
 
 # Trees, houses and lighthouses.
 OBJECT_DRAW_DISTANCE = 300.0  # trees and houses beyond this are not drawn

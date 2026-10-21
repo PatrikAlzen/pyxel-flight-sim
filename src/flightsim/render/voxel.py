@@ -123,8 +123,9 @@ class VoxelRenderer:
         self.dither = np.tile(_BAYER, (height // 4 + 1, width // 4 + 1))[
             :height, :width
         ]
-        # Continuous fog level per sample distance, 0 (clear) .. FOG_LEVELS (sky).
-        self.fog = self.fog_for(self.z)
+        # Share of the clear-weather view distance before everything is fog;
+        # the weather lowers it in rain.
+        self.visibility = 1.0
         self._sx = (np.arange(width) + 0.5)[None, :]
         self._sy = (np.arange(height) + 0.5)[:, None]
 
@@ -151,7 +152,8 @@ class VoxelRenderer:
     def fog_for(self, z: np.ndarray) -> np.ndarray:
         """Continuous fog level for distance ``z``: 0 (clear) .. FOG_LEVELS (sky)."""
         s = self.settings
-        return smoothstep(s.fog_start * s.z_far, s.z_far, z) * palette.FOG_LEVELS
+        far = s.z_far * self.visibility
+        return smoothstep(s.fog_start * far, far, z) * palette.FOG_LEVELS
 
     def depth_ranges(
         self, levels: Sequence[TerrainLevel], count: int | None = None
@@ -186,8 +188,9 @@ class VoxelRenderer:
 
         Afterwards ``pixel_azimuth``, ``pixel_slope`` (tangent of the elevation
         angle) and ``pixel_distance``
-        (horizontal distance to the terrain, infinite for sky) describe what
-        each pixel looks at, for overlays that must hide behind terrain.
+        (horizontal distance to the terrain or a thick cloud, infinite for sky)
+        describe what each pixel looks at, for overlays that must hide behind
+        terrain and clouds.
         """
         s = self.settings
         azimuth, slope, east, south = self._pixel_angles(camera)

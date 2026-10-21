@@ -53,6 +53,7 @@ from flightsim.render.hud import (
     shaded_rect,
     shadow_text,
 )
+from flightsim.render.rain import Rain
 from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
     BROADLEAF,
@@ -87,6 +88,7 @@ from flightsim.sim.race import (
     format_time,
     ghost_position,
 )
+from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import Airfield, landing_report
 from flightsim.terrain.generator import TerrainGenerator
@@ -164,6 +166,12 @@ class App:
         self.wrecks = Wrecks(config.MAX_WRECKS)
         self.time = 0.0  # simulated seconds, drives waves and cloud drift
         self.lighting = 0  # index into palette.LIGHTINGS
+        self.weather: Weather | None = None
+        self.weather_lock: str | None = None  # preset picked in the pause menu
+        self.wind = (0.0, 0.0)
+        self.rain = Rain()
+        self.turbulence = 0.0  # 0..1 where the plane is, for the HUD
+        self.installed_palette: tuple[int, int] | None = None  # (lighting, overcast)
         self.mode = Mode.TITLE
         self.ghost = False
         self.menu_index = 0
@@ -208,7 +216,11 @@ class App:
         self.wreck_sprite = make_image(PLANE_WRECK)
         self.prop_sprites = {
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
-            "windsock": (make_image(WINDSOCK), config.WINDSOCK_WIDTH),
+            # Blowing right and, mirrored, left as seen from the camera.
+            "windsock": (
+                [make_image(WINDSOCK), make_image([r[::-1] for r in WINDSOCK])],
+                config.WINDSOCK_WIDTH,
+            ),
         }
         # Trees (one image per Tree variant), houses (one per roof) and the
         # lighthouse, in that order; OBJECT_SPRITE_BASE maps a Kind to its first.
@@ -238,7 +250,7 @@ class App:
             self.show_debug = not self.show_debug
         if pressed(Action.TIME_OF_DAY):
             self.lighting = (self.lighting + 1) % len(palette.LIGHTINGS)
-            palette.install(palette.LIGHTINGS[self.lighting])
+            self.install_palette()
         if self.mode is not Mode.FLYING or self.ghost:
             self.audio.silence()
         match self.mode:
@@ -283,6 +295,13 @@ class App:
         self.camera = Camera()
         self.chase.reset()
         self.clouds = CloudLayer(self.seed)
+        self.weather = Weather(self.seed)
+        if self.weather_lock is not None:
+            self.weather.lock(next(p for p in PRESETS if p.name == self.weather_lock))
+            self.weather.update(self.weather.transition)  # start in it
+        self.wind = (0.0, 0.0)
+        self.turbulence = 0.0
+        self.apply_weather()
         self.particles.clear()
         self.wrecks.clear()
         self.saved = self.store.load(self.seed)
@@ -382,7 +401,11 @@ class App:
                 self.camera.x, self.camera.y, config.FIELD_SEARCH_RINGS
             )
             self.discover_landmarks()
-        self.particles.update(DT, self.clouds.settings.drift)
+        self.weather.update(DT)
+        self.wind = self.weather.wind()
+        self.clouds.advance(self.wind, DT)
+        self.apply_weather()
+        self.particles.update(DT, self.wind)
         cam = self.camera
         self.particles.smoulder(
             self.wrecks.near(cam.x, cam.y, config.WRECK_SMOKE_DISTANCE), DT
@@ -393,7 +416,8 @@ class App:
             self.fly()
             plane = self.aircraft
             agl = plane.altitude - self.world.height_at(plane.x, plane.y)
-            self.audio.update(plane, agl)
+            self.audio.update(plane, agl, self.weather.current.rain)
+        self.rain.update(DT, self.wind, self.camera)
         self.world.update(self.camera.x, self.camera.y)
 
     def update_paused(self) -> None:
@@ -429,6 +453,8 @@ class App:
             case "END TIME TRIAL":
                 self.end_race("TIME TRIAL ENDED")
                 self.mode = Mode.FLYING
+            case item if item.startswith("WEATHER"):
+                self.cycle_weather()
             case "NEW WORLD":
                 self.close_world()
                 self.mode = Mode.TITLE
@@ -442,7 +468,8 @@ class App:
             trial = ["TIME TRIAL"]
             if self.last_trial_field is not None:
                 trial.append("RETRY TIME TRIAL")
-        return ["RESUME", "RESPAWN", "PLACES", *trial, "NEW WORLD", "QUIT"]
+        weather = f"WEATHER: {self.weather_lock or 'AUTO'}"
+        return ["RESUME", "RESPAWN", "PLACES", *trial, weather, "NEW WORLD", "QUIT"]
 
     def places_menu_items(self) -> list[str | Place]:
         return ["SAVE HERE", *self.saved.places, "BACK"]
@@ -509,6 +536,59 @@ class App:
         except OSError:
             self.show_toast("COULD NOT SAVE")
             return False
+
+    # --- weather ----------------------------------------------------------
+
+    def apply_weather(self) -> None:
+        """Hand the current weather to the clouds, the fog and the palette."""
+        c = self.weather.current
+        self.clouds.coverage = c.cloud_cover
+        self.clouds.altitude = c.cloud_base
+        self.renderer.visibility = c.visibility
+        self.install_palette()
+
+    def install_palette(self) -> None:
+        """The palette for the time of day under the current cloud cover.
+
+        Overcast is rounded to a few steps: rebuilding the palette every frame
+        would be wasted work, and the steps are too small to notice.
+        """
+        overcast = 0.0 if self.weather is None else self.weather.current.overcast
+        key = (self.lighting, round(overcast * config.OVERCAST_STEPS))
+        if key == self.installed_palette:
+            return
+        self.installed_palette = key
+        lighting = palette.LIGHTINGS[self.lighting]
+        palette.install(palette.overcast(lighting, key[1] / config.OVERCAST_STEPS))
+
+    def cycle_weather(self) -> None:
+        """Pause menu: AUTO, then each preset in turn, then back to AUTO."""
+        names = [p.name for p in PRESETS]
+        if self.weather_lock is None:
+            self.weather_lock = names[0]
+        elif self.weather_lock == names[-1]:
+            self.weather_lock = None
+        else:
+            self.weather_lock = names[names.index(self.weather_lock) + 1]
+        lock = next((p for p in PRESETS if p.name == self.weather_lock), None)
+        self.weather.lock(lock)
+
+    def turbulence_here(self) -> float:
+        """How bumpy the air is around the plane: weather, ridges and cloud."""
+        plane = self.aircraft
+        if plane.state is not FlightState.FLYING:
+            return 0.0
+        d = config.TURBULENCE_PROBE
+        heights = [
+            self.world.height_at(plane.x + dx, plane.y + dy)
+            for dx, dy in ((d, 0), (-d, 0), (0, d), (0, -d))
+        ]
+        slope = max(abs(heights[0] - heights[1]), abs(heights[2] - heights[3])) / (
+            2 * d
+        )
+        agl = plane.altitude - self.world.height_at(plane.x, plane.y)
+        in_cloud = self.clouds.inside(plane.x, plane.y, plane.altitude)
+        return turbulence_intensity(self.weather.current, agl, slope, in_cloud)
 
     def show_toast(self, text: str, seconds: float = TOAST_SECONDS) -> None:
         self.toast = text
@@ -614,7 +694,9 @@ class App:
         was_crashed = plane.state is FlightState.CRASHED
         was_flying = plane.state is FlightState.FLYING
         start = np.array([plane.x, plane.y, plane.altitude])
-        plane.update(flight_controls(), DT, self.world.height_at)
+        self.turbulence = self.turbulence_here()
+        bump = self.weather.turbulence_kick(self.turbulence)
+        plane.update(flight_controls(), DT, self.world.height_at, self.wind, bump)
         if was_flying and plane.state is FlightState.LANDED:
             self.touched_down()
         if plane.state is not FlightState.CRASHED:
@@ -814,6 +896,7 @@ class App:
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
         if chase and not self.ghost:
             self.draw_plane()
+        self.draw_rain()
         match self.hud_mode:
             case HudMode.NONE:
                 return
@@ -831,11 +914,20 @@ class App:
             self.world,
             cockpit=not chase,
             target=None if self.race else self.target_field,
+            wind=self.wind,
+            turbulence=self.turbulence,
         )
         if self.race:
             ring = self.race.course.rings[self.race.next_ring]
             draw_ring_arrow(ring, self.camera, self.renderer)
             self.hud.race_panel(self.race, self.race_flash)
+
+    def draw_rain(self) -> None:
+        """Rain falls below the clouds; it thins out climbing up into them."""
+        cam = self.camera
+        above = cam.altitude - self.clouds.altitude
+        amount = self.weather.current.rain * min(1.0, max(0.0, 1.0 - above / 40.0))
+        self.rain.draw(amount, cam, self.renderer)
 
     def draw_record_ghost(self) -> None:
         """The record run, replayed as a see-through plane flying alongside."""
@@ -906,9 +998,22 @@ class App:
         for field in fields:
             for kind, positions in self.props_of(field).items():
                 sprite, width = self.prop_sprites[kind]
-                full = full_size_distance(sprite, width, self.renderer.focal)
+                variants = None
+                if kind == "windsock":
+                    # Mirror the sock when the wind blows to the camera's left.
+                    right = (math.cos(cam.heading), math.sin(cam.heading))
+                    left = self.wind[0] * right[0] + self.wind[1] * right[1] < 0
+                    variants = np.full(len(positions), int(left))
+                first = sprite if isinstance(sprite, pyxel.Image) else sprite[0]
+                full = full_size_distance(first, width, self.renderer.focal)
                 draw_billboards(
-                    sprite, TRANSPARENT, positions, cam, self.renderer, full
+                    sprite,
+                    TRANSPARENT,
+                    positions,
+                    cam,
+                    self.renderer,
+                    full,
+                    variants=variants,
                 )
 
     def props_of(self, field: Airfield) -> dict[str, np.ndarray]:

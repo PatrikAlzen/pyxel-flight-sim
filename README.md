@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 och 7a–7d klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, vågor, jaktkamera och dag/skymning/natt. Kvar: 7e (väder) och 7f (webb).
+> **Status:** fas 0–6 och 7a–7e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. Kvar: 7f (webb).
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -221,7 +221,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 
 ### Ljud
 
-Pyxels inbyggda ljudmotor: motorljud vars tonhöjd följer gasen, vindbrus som följer farten, varningstoner för STALL och PULL UP, en krasch och blip-ljud i menyerna (se fas 6).
+Pyxels inbyggda ljudmotor: motorljud vars tonhöjd följer gasen, vindbrus som följer farten (ett regnsmatter i stället när det regnar), varningstoner för STALL och PULL UP, en krasch och blip-ljud i menyerna (se fas 6).
 
 ## Projektstruktur
 
@@ -247,7 +247,8 @@ pyxel-flight-sim/
 │       ├── render/
 │       │   ├── palette.py     # palettdefinition och färgramper
 │       │   ├── voxel.py       # Voxel Space-renderare (NumPy) med himmel och dimma
-│       │   ├── clouds.py      # molnlager på fast höjd, skyms av terräng
+│       │   ├── clouds.py      # molnlager med täckning och höjd från vädret, driver med vinden
+│       │   ├── rain.py        # regndroppar i en låda runt kameran, ritade som rörelsestreck
 │       │   ├── sprites.py     # pixelgrafik som text (flygplanet)
 │       │   ├── framebuffer.py # NumPy-array ↔ pyxel.Image via data_ptr()
 │       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta, tidsloppspanel
@@ -256,6 +257,7 @@ pyxel-flight-sim/
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
 │       │   ├── camera.py      # kamerans position och orientering
+│       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
 │       └── controls.py        # tangentbord/gamepad → abstrakta kommandon
@@ -268,7 +270,8 @@ pyxel-flight-sim/
     ├── test_framebuffer.py    # NumPy-vy över Pyxel-bilder
     ├── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
     ├── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
-    └── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
+    ├── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
+    └── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
 ```
 
 ## Implementationsplan
@@ -571,7 +574,7 @@ Målet är riktiga platser att landa på, som också fungerar som start- och mit
   - Sparning: besökta fält.
 - **Provkörd i riktigt fönster:** start på bana, lyft, en inflygning som landade på fält 657 och gav *NEW FIELD 657: FIRM*, och kartan med två banor. Ritningen tog i snitt ~18–22 ms per bildruta.
 - **Rättat efteråt: hangar och vindstrut blinkade.** Testet som döljer sprites bakom terräng gjordes vid spritens fotpunkt. När marken ses snett räcker ett litet höjdfel mellan fotpunkten (exakt generatorhöjd) och den ritade marken (lagrad, grövre långt bort) för att terrängträffen i den pixeln hamnar många enheter närmare. Under en inflygning döljdes hangaren därför i ungefär halva bildrutorna och växlade synlighet 43 gånger. Nu testas spritens mitt (`billboard_visible`) och marginalen växer med avståndet (3 + 2 %). Växlingarna gick från 43 till 3 för hangaren och från 26 till 2 för vindstruten, och de som återstår är riktiga, när den försvinner bakom en kulle. Det kontrollerades mot en siktlinje genom terrängen, med överensstämmelse i 59 av 60 lägen. Ett regressionstest kontrollerar att en sprite med fotpunkten en halv enhet fel syns i varje bildruta men döljs bakom en vägg. Den nya marginalen gäller även partiklarna.
-- **Inte gjort:** bränsle (valfritt i planen). Vindstruten visar ännu ingen vindriktning, vilket kommer med vädret i 7e.
+- **Inte gjort:** bränsle (valfritt i planen). Vindstruten visar vindriktningen sedan 7e.
 
 #### 7c – Ringar och tidslopp ✅
 
@@ -658,7 +661,7 @@ Målet är att världen ska kännas befolkad och ha landmärken att navigera eft
 - **Rättat efteråt: objekten lutade med kameran.** Sprites ritades upprätt i *skärmens* koordinater, så när man rollade lutade träd, hus, fyrar, hangarer och vrak med kameran i stället för att stå på marken. Nu projiceras både foten och toppen av varje objekt (`standing_pose`). Spriten centreras mitt emellan och roteras så att dess upp pekar från foten mot toppen, det vill säga längs världens lodlinje. Det gäller vid roll, i ryggläge och vid branta vyer. Tester för 0°, ±30°, ±90° och 180° roll, och kontrollerat i fönster vid 50° och 90° bank.
 - **Inte gjort:** ingen synlig väg genom byarna, bara husens placering längs den. Byar och fyrar syns inte på minikartan.
 
-#### 7e – Väder: vind, turbulens och regn *(medel)*
+#### 7e – Väder: vind, turbulens och regn ✅
 
 Målet är att flygningen ska variera och att förhållandena ska kännas.
 
@@ -670,6 +673,56 @@ Målet är att flygningen ska variera och att förhållandena ska kännas.
 - **HUD:** vindpil och vindstyrka, plus *TURBULENCE* som varning i storm.
 
 **Tester:** vindavdrift (ett plan med kurs norrut och vind från väster driver österut), att övergångarna mellan förinställningar är kontinuerliga och att molntäckningen vid en given tröskel stämmer. **Risk:** turbulens kan kännas frustrerande, så den behöver tydliga reglage och vara svag som standard.
+
+**Resultat:**
+- **Väder** ([sim/weather.py](src/flightsim/sim/weather.py)):
+  - Fem förinställningar (`CLEAR`, `PARTLY CLOUDY`, `OVERCAST`, `RAIN`, `STORM`) med vind, byighet, molntäckning, molnbas, regn, turbulens, mulenhet och sikt.
+  - Vädret ligger kvar 2–4 minuter och glider sedan över 40 s (smoothstep) till ett grannläge. Regn och storm klarnar hellre upp än klart väder blir sämre.
+  - En ny värld börjar klar eller halvklar. Allt slumpas från världens seed, så samma seed ger samma väder.
+  - Pausmenyn har *WEATHER: AUTO*. Varje tryck byter till nästa läge (AUTO → CLEAR → … → STORM → AUTO), och ett låst läge nås på 8 s. Låsningen gäller även i nästa värld.
+- **Vind:**
+  - Vindriktningen vrider sig långsamt, och byarna är summor av sinusvågor kring medelvinden (4 enheter/s i klart väder, 24 i storm).
+  - Planet driver med vinden i luften men står still på marken. Samma vind flyttar molnen och röken från vrak.
+  - Vindstruten på flygfälten speglas så att den pekar dit vinden blåser, sett från kameran.
+- **Turbulens:**
+  - Små tipp- och rollstörningar (högst 0,22 respektive 0,45 rad/s) läggs ovanpå spakens rörelser, bara i luften.
+  - Styrkan är vädrets egen turbulens, plus ett tillskott lågt över brant terräng (mer i hård vind) och +0,4 inne i ett moln. Klart väder högt upp ger ingen turbulens alls.
+- **Moln** ([render/clouds.py](src/flightsim/render/clouds.py)):
+  - Täckning och höjd kan ändras varje bildruta. Tröskeln tas ur de sorterade tätheterna, så täckningen stämmer exakt utan att texturen byggs om (testat vid 10, 35 och 80 %).
+  - Molnbasen sjunker från 420 i klart väder till 220 i storm.
+  - `CloudLayer.inside` säger om planet är inne i ett moln.
+  - **Rättat efteråt:** sett ovanifrån syntes träd, hus och rök genom molnen fast marken var dold. Täta moln (opacitet över 0,5) skriver nu in sitt avstånd i `pixel_distance`, så allt som testas mot terrängen döljs också bakom moln. Gränsen ligger fast och följer inte ditheringen, så att sprites vid en tunn molnkant inte blinkar.
+- **Sikt och ljus:**
+  - `VoxelRenderer.visibility` drar ihop dimman, ned till 40 % av siktavståndet i storm.
+  - `palette.overcast` blandar ljuset mot grå dimma och himmel, dämpar terrängen och tar bort en del av färgmättnaden. Det fungerar ovanpå dag, skymning och natt.
+  - Paletten byggs bara om när mulenheten ändras ett av åtta steg.
+- **Regn** ([render/rain.py](src/flightsim/render/rain.py)): upp till 500 droppar i världen, i en låda om 70 × 70 × 50 enheter som följer med kameran (dropparna går runt i lådan).
+  - Dropparna faller och driver med vinden och projiceras som allt annat, så de faller nedåt i världen vid pitch, roll och loopar.
+  - Varje streck visar hur droppen rör sig relativt kameran under en kort stund, 2–16 pixlar. Står planet still faller regnet rakt ned. I fart strålar strecken ut från färdriktningen.
+  - Droppar bakom terrängen döljs.
+  - Regnet tunnas ut när man stiger upp genom molnbasen och syns inte ovanför molnen.
+  - Beräkningen tar ~0,15 ms per bildruta.
+  - **Rättat efteråt:** först rullade regnet bara nedåt över skärmen. När man pitchade upp rörde sig världen nedåt i bild snabbare än regnet, och då såg regnet ut att falla uppåt.
+- **Ljud:** när det regnar spelar vindkanalen ett ljusare smatter i tre styrkor i stället för vindbruset.
+- **HUD:**
+  - Under fartbandet visas en vindpil i förhållande till nosen (uppåt = medvind) och vindstyrkan, eller *CALM*.
+  - Över 0,45 i turbulens blinkar *TURBULENCE*.
+- **Tester:** 17 nya (totalt 189):
+  - Vind och turbulens på planet: vindavdrift i luften men inte parkerad, och att turbulensen bara vrider planet i luften.
+  - Vädrets förlopp: kontinuerliga övergångar, att vädret byter av sig självt utan hopp, determinism, att låsning når läget och stannar, och vindstyrka och byighet.
+  - Turbulensens storlek: begränsad och noll vid styrka noll, och starkare lågt över kammar och i moln.
+  - Moln: täckning vid tre värden, att molnen följer vinden och att täta moln döljer träd under sig.
+  - Regn: strecken pekar längs världens lodlinje vid pitch upp, pitch ned och roll, och strålar ut från mitten när planet flyger framåt.
+- **Provkört i riktigt fönster** med en skriptad tur genom alla fem lägen:
+  - Klart med vindpil *W 4*, halvklart och mulet med grå himmel och kortare sikt.
+  - Regn med streck, grå terräng och blinkande *TURBULENCE* (0,46) nära berg.
+  - Storm med turbulens 1,0 och därefter krasch i ett berg.
+  - En andra tur stod på en bana i storm och vände planet, och vindpilen bytte sida.
+  - En bildruta tog i snitt ~20 ms på en långsam dag.
+- **Inte gjort:**
+  - Ingen blixt eller åska.
+  - Vädret sparas inte mellan sessioner.
+  - Vindstrutens spegling testades inte i fönstret, eftersom den aldrig syntes i bild från startplatsen.
 
 #### 7f – Webbversion *(medel, gör sist)*
 

@@ -3,7 +3,7 @@
 Channel use:
 
     0  engine: a short looping rumble whose pitch follows the throttle
-    1  wind: looping noise that gets louder with airspeed
+    1  wind: looping noise that gets louder with airspeed; a hiss in rain
     2  alerts: stall and pull-up tones, looping while the alert lasts
     3  one-shots: crash, menu blips
 
@@ -23,6 +23,7 @@ from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 
 ENGINE_LEVELS = 8
 WIND_LEVELS = 5  # including 0 = silent
+RAIN_LEVELS = 4  # including 0 = dry
 
 _NOTE_NAMES = ["c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"]
 
@@ -49,15 +50,18 @@ class SoundState:
     engine: int | None
     wind: int
     alert: Alert | None
+    rain: int = 0  # replaces the wind on its channel while it rains
 
     @staticmethod
-    def choose(plane: Aircraft, agl: float) -> SoundState:
+    def choose(plane: Aircraft, agl: float, rain: float = 0.0) -> SoundState:
+        """``rain`` is the weather's rain, 0..1."""
+        level = min(RAIN_LEVELS - 1, round(rain * (RAIN_LEVELS - 1)))
         if plane.state is FlightState.CRASHED:
-            return SoundState(None, 0, None)
+            return SoundState(None, 0, None, level)
         engine = round(plane.throttle * (ENGINE_LEVELS - 1))
         # Wind starts at taxi speeds and is loudest near top speed.
         wind = max(0, min(WIND_LEVELS - 1, int((plane.speed - 20) / 30)))
-        return SoundState(engine, wind, plane.alert(agl))
+        return SoundState(engine, wind, plane.alert(agl), level)
 
 
 SILENT = SoundState(None, 0, None)
@@ -68,6 +72,9 @@ class Audio:
         self.engine = [self._engine_sound(level) for level in range(ENGINE_LEVELS)]
         self.wind = [None] + [
             self._wind_sound(level) for level in range(1, WIND_LEVELS)
+        ]
+        self.rain = [None] + [
+            self._rain_sound(level) for level in range(1, RAIN_LEVELS)
         ]
         self.alerts = {
             Alert.STALL: make_sound("c3rc3r", "s", "5", "n", 7),
@@ -92,9 +99,14 @@ class Audio:
     def _wind_sound(level: int) -> pyxel.Sound:
         return make_sound("a3b3a3g3", "n", str(level), "n", 12)
 
-    def update(self, plane: Aircraft, agl: float) -> None:
+    @staticmethod
+    def _rain_sound(level: int) -> pyxel.Sound:
+        # Higher and busier than the wind: a steady patter on the canopy.
+        return make_sound("g4e4a4f4d4g4", "n", str(level + 1), "n", 2)
+
+    def update(self, plane: Aircraft, agl: float, rain: float = 0.0) -> None:
         """Bring the looping channels in line with the plane; play a crash once."""
-        self.set_state(SoundState.choose(plane, agl))
+        self.set_state(SoundState.choose(plane, agl, rain))
         if (
             plane.state is FlightState.CRASHED
             and self.last_state is not FlightState.CRASHED
@@ -108,8 +120,10 @@ class Audio:
             self._loop(
                 CH_ENGINE, None if state.engine is None else self.engine[state.engine]
             )
-        if state.wind != old.wind:
-            self._loop(CH_WIND, self.wind[state.wind])
+        if (state.wind, state.rain) != (old.wind, old.rain):
+            self._loop(
+                CH_WIND, self.rain[state.rain] if state.rain else self.wind[state.wind]
+            )
         if state.alert != old.alert:
             self._loop(
                 CH_ALERT, None if state.alert is None else self.alerts[state.alert]
