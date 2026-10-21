@@ -57,3 +57,9 @@ GHOST_SPEED = 2.0  # world units per frame
 GHOST_FAST = 5.0  # speed multiplier while SHIFT is held
 GHOST_TURN = 0.04  # radians per frame
 GHOST_CLEARANCE = 4.0  # minimum height above the ground
+
+# Photo mode.
+PHOTO_FOVS = (90.0, 70.0, 50.0, 35.0, 25.0)  # degrees, Z/X step through them
+PHOTO_PLANE_SPAN = 5.5  # world units across the plane's sprites
+PHOTO_SCALE = 3  # saved image is this many times the screen size
+PHOTO_FLASH = 0.2  # seconds of white after taking a photo

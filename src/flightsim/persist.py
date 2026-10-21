@@ -112,6 +112,17 @@ class SaveStore:
         temporary.write_text(json.dumps(world.to_dict(), indent=1))
         os.replace(temporary, path)
 
+    def photo_path(self, seed: int, x: float, y: float, lighting: str) -> Path:
+        """Where to save a photo, without the ``.png`` Pyxel adds: named after
+        the seed, the position and the light, numbered if that is taken."""
+        directory = self.directory / "photos"
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = f"seed{seed}_x{round(x)}_y{round(y)}_{lighting.lower()}"
+        path, number = directory / stem, 2
+        while path.with_name(path.name + ".png").exists():
+            path, number = directory / f"{stem}_{number}", number + 1
+        return path
+
     def summary(self, seed: int) -> tuple[int, int]:
         """Number of wrecks and places saved for ``seed``, without side effects."""
         try:

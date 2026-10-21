@@ -22,9 +22,11 @@ _COLORS = {
     "n": pyxel.COLOR_NAVY,
     "o": pyxel.COLOR_ORANGE,
     "b": pyxel.COLOR_BROWN,
+    "e": pyxel.COLOR_GREEN,
 }
 
-# A small high-wing plane seen from behind and slightly above.
+# A small high-wing plane seen from behind and slightly above. Navigation
+# lights tell the views apart: red on the left wing tip, green on the right.
 PLANE_REAR = [
     "...........kwk...........",
     "...........kwk...........",
@@ -32,11 +34,60 @@ PLANE_REAR = [
     ".......kkkkkwkkkkk.......",
     ".......kgwwwwwwwgk.......",
     "kkkkkkkkkkkkwkkkkkkkkkkkk",
-    "krwwwwwwwwwwwwwwwwwwwwwrk",
+    "krwwwwwwwwwwwwwwwwwwwwwek",
     "kkkkggggggknnnkggggggkkkk",
     "..........kwwwk..........",
     "..........kgggk..........",
     "...........kkk...........",
+]
+
+
+# The same plane coming towards you: propeller disc, windscreen and wheels,
+# the fin peeking over the wing, and the lights swapped round.
+PLANE_FRONT = [
+    "...........kwk...........",
+    "...........kwk...........",
+    "kkkkkkkkkkkkkkkkkkkkkkkkk",
+    "kewwwwwwwwwwwwwwwwwwwwwrk",
+    "kkkkggggggkkkkkggggggkkkk",
+    ".........knnnnnk.........",
+    ".........kwwwwwk.........",
+    "........kyyykyyyk........",
+    ".......kyyyyyyyyyk.......",
+    "........kyyykyyyk........",
+    "......k...kwwwk...k......",
+    ".....kkk...kkk...kkk.....",
+]
+
+# The same plane from straight above, nose up: wings, cabin roof, tailplane.
+PLANE_TOP = [
+    "............y............",
+    "...........kgk...........",
+    "...........kwk...........",
+    "kkkkkkkkkkkkkkkkkkkkkkkkk",
+    "rwwwwwwwwwwnnnwwwwwwwwwwe",
+    "kkkkkkkkkkkwwwkkkkkkkkkkk",
+    "...........kwk...........",
+    "...........kwk...........",
+    "...........kwk...........",
+    "........kkkkwkkkk........",
+    "........kwwwwwwwk........",
+    "........kkkkrkkkk........",
+]
+
+# The same plane from its left side, flying to the right: tail fin, high wing
+# seen edge on, cabin windows, propeller and wheels.
+PLANE_SIDE = [
+    "kkk......................",
+    "kwwk.....................",
+    "krwwk...kkkkkkkkkkkkk....",
+    ".kwwwk..kgggggggggggk....",
+    ".kwwwwkkkkkkkkkkkkkkkkk..",
+    ".kwwwwwwwwwwwwwnnnwnnwwkk",
+    "..kkwwwwwwwwwwwnnnwnnwwky",
+    "....kkkgggggggggggggggkky",
+    "..........k......k.....k.",
+    ".........kkk....kkk......",
 ]
 
 

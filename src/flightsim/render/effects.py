@@ -5,6 +5,7 @@ the renderer's per-pixel terrain distance, so smoke rising behind a ridge is
 cut off by it.
 """
 
+import math
 from collections.abc import Sequence
 
 import numpy as np
@@ -21,6 +22,9 @@ WRECK_FULL_SIZE_DISTANCE = 40.0
 WRECK_TILT = -14.0  # degrees: lying on its side
 # Below this scale (about three pixels wide) a sprite is not worth drawing.
 MIN_SCALE = 0.12
+# Below 1 the top view is only used when looking at a plane nearly straight
+# down or up; the rear and side views say more about how it flies.
+TOP_VIEW_BIAS = 0.8
 
 
 def project_points(
@@ -236,3 +240,70 @@ def standing_pose(
     dx, dy = tx - fx, ty - fy
     angle = np.degrees(np.arctan2(dx, -dy))
     return (fx + tx) / 2, (fy + ty) / 2, np.nan_to_num(angle), upright
+
+
+def aircraft_pose(
+    forward: np.ndarray, up: np.ndarray, position: np.ndarray, camera: Camera
+) -> tuple[str, bool, float]:
+    """Which view of a plane to draw and how: ("rear" | "front" | "side" |
+    "top", mirrored, degrees to rotate clockwise).
+
+    The view is the plane's axis that points most nearly along the line of
+    sight: its nose (rear or front), a wing (side) or its back (top). The
+    sprite is turned so its top lines up with the plane's up on screen (its
+    nose, for the top view), and mirrored when that is the only way to also
+    get the nose pointing the right way: the side sprite flying left, upside
+    down, or the top view seen from below.
+    """
+    _, r, u = camera.basis()
+    ray = np.asarray(position, dtype=float) - np.array(camera.position, dtype=float)
+    ray /= max(float(np.linalg.norm(ray)), 1e-9)
+    right = np.cross(forward, up)
+    along, above, beside = float(forward @ ray), float(up @ ray), float(right @ ray)
+    fx, fy = float(forward @ r), float(forward @ u)  # nose on screen, y up
+    ux, uy = float(up @ r), float(up @ u)
+    if abs(above) * TOP_VIEW_BIAS > max(abs(along), abs(beside)):
+        # Seen from below (the ray runs along the plane's up) the wings swap.
+        return "top", above > 0, math.degrees(math.atan2(fx, fy))
+    angle = math.degrees(math.atan2(ux, uy))
+    if abs(along) >= abs(beside):
+        return ("rear" if along > 0 else "front"), False, angle
+    # The sprite's nose is to the right of its top; on screen the plane's nose
+    # is either there too or, mirrored, to the left.
+    return "side", fx * uy - fy * ux < 0, angle
+
+
+def draw_aircraft(
+    sprites: dict[str, pyxel.Image],
+    colkey: int,
+    position: np.ndarray,
+    forward: np.ndarray,
+    up: np.ndarray,
+    camera: Camera,
+    renderer: VoxelRenderer,
+    span: float,
+) -> None:
+    """A plane at ``position`` seen from wherever the camera is, ``span`` world
+    units across, picking the rear, front, side or top sprite (see ``aircraft_pose``)."""
+    w, h = renderer.width, renderer.height
+    point = np.asarray(position, dtype=float)[None, :]
+    sx, sy, depth = project_points(camera, point, renderer.focal, w, h)
+    if depth[0] <= 1.0 or not in_front_of_terrain(renderer, camera, point, sx, sy)[0]:
+        return
+    view, mirrored, angle = aircraft_pose(forward, up, point[0], camera)
+    img = sprites[view]
+    scale = span * renderer.focal / (img.width * depth[0])
+    if scale < MIN_SCALE:
+        return
+    pyxel.blt(
+        sx[0] - img.width / 2,
+        sy[0] - img.height / 2,
+        img,
+        0,
+        0,
+        -img.width if mirrored else img.width,
+        img.height,
+        colkey,
+        rotate=angle,
+        scale=scale,
+    )

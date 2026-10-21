@@ -23,6 +23,7 @@ import argparse
 import math
 import random
 import time
+from dataclasses import replace
 from enum import Enum, auto
 
 import numpy as np
@@ -37,6 +38,7 @@ from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
     WRECK_FULL_SIZE_DISTANCE,
     WRECK_TILT,
+    draw_aircraft,
     draw_billboards,
     draw_particles,
     full_size_distance,
@@ -59,7 +61,10 @@ from flightsim.render.sprites import (
     BROADLEAF,
     HANGAR,
     LIGHTHOUSE,
+    PLANE_FRONT,
     PLANE_REAR,
+    PLANE_SIDE,
+    PLANE_TOP,
     PLANE_WRECK,
     SNOWY_SPRUCE,
     SPRUCE,
@@ -79,6 +84,7 @@ from flightsim.render.worldmap import (
 from flightsim.sim.aircraft import Aircraft, AircraftSettings, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera, sprite_angle
+from flightsim.sim.freecam import FreeCamera, FreeMode
 from flightsim.sim.particles import Particles
 from flightsim.sim.race import (
     Course,
@@ -112,6 +118,7 @@ class Mode(Enum):
     FLYING = auto()
     PAUSED = auto()
     MAP = auto()
+    PHOTO = auto()
 
 
 def make_world(seed: int) -> TerrainWorld:
@@ -155,6 +162,8 @@ class App:
         self.world: TerrainWorld | None = None
         self.world_map: WorldMap | None = None
         self.renderer = VoxelRenderer(W, H)
+        self.base_renderer = self.renderer  # the photo mode zooms with others
+        self.zoomed_renderers: dict[float, VoxelRenderer] = {}
         self.hud = Hud(self.renderer.focal, config.RESPAWN_DELAY)
         self.camera = Camera()
         self.chase = ChaseCamera()
@@ -198,6 +207,14 @@ class App:
         self.progress = 0.0
         self.show_debug = False
         self.hud_mode = HudMode.FULL
+        self.photo: FreeCamera | None = None
+        self.photo_fov = 0  # index into config.PHOTO_FOVS
+        self.photo_return: tuple[float, ...] = ()  # camera to restore afterwards
+        self.photo_plane = True  # show the plane in photos
+        self.photo_frame = False  # letterbox bars
+        self.photo_help = True
+        self.photo_requested = False
+        self.photo_flash_until = 0.0
         self.render_time = Timer()
         self.frame_time = Timer()
         self.last_frame = time.perf_counter()
@@ -213,6 +230,12 @@ class App:
         palette.install()
         self.title_images = make_title_images(config.TITLE.upper())
         self.plane_sprite = make_image(PLANE_REAR)
+        self.plane_views = {
+            "rear": self.plane_sprite,
+            "front": make_image(PLANE_FRONT),
+            "side": make_image(PLANE_SIDE),
+            "top": make_image(PLANE_TOP),
+        }
         self.wreck_sprite = make_image(PLANE_WRECK)
         self.prop_sprites = {
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
@@ -232,9 +255,9 @@ class App:
             make_image(LIGHTHOUSE, WORLD_COLORS),
         ]
         kinds = [Kind.TREE] * 3 + [Kind.HOUSE] * 4 + [Kind.LIGHTHOUSE]
-        self.object_full_size = [
-            HEIGHT[kind] * self.renderer.focal / img.height
-            for kind, img in zip(kinds, self.object_sprites)
+        # Full-size distance per sprite, per unit of focal length (zoom changes it).
+        self.object_full_size_per_focal = [
+            HEIGHT[kind] / img.height for kind, img in zip(kinds, self.object_sprites)
         ]
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
@@ -243,7 +266,7 @@ class App:
     # --- update -----------------------------------------------------------
 
     def update(self) -> None:
-        if pressed(Action.HUD_MODE):
+        if pressed(Action.HUD_MODE) and self.mode is not Mode.PHOTO:
             self.hud_mode = self.hud_mode.next()
             self.show_toast(self.hud_mode.value)
         if pressed(Action.DEBUG):
@@ -264,6 +287,8 @@ class App:
                 self.update_paused()
             case Mode.MAP:
                 self.update_map()
+            case Mode.PHOTO:
+                self.update_photo()
 
     def update_title(self) -> None:
         seed = self.seed
@@ -387,6 +412,9 @@ class App:
             return
         if pressed(Action.SAVE_PLACE):
             self.save_place()
+        if pressed(Action.PHOTO):
+            self.enter_photo()
+            return
         if pressed(Action.MAP):
             self.mode = Mode.MAP
             return
@@ -455,6 +483,8 @@ class App:
                 self.mode = Mode.FLYING
             case item if item.startswith("WEATHER"):
                 self.cycle_weather()
+            case "PHOTO MODE":
+                self.enter_photo()
             case "NEW WORLD":
                 self.close_world()
                 self.mode = Mode.TITLE
@@ -469,7 +499,16 @@ class App:
             if self.last_trial_field is not None:
                 trial.append("RETRY TIME TRIAL")
         weather = f"WEATHER: {self.weather_lock or 'AUTO'}"
-        return ["RESUME", "RESPAWN", "PLACES", *trial, weather, "NEW WORLD", "QUIT"]
+        return [
+            "RESUME",
+            "RESPAWN",
+            "PLACES",
+            *trial,
+            weather,
+            "PHOTO MODE",
+            "NEW WORLD",
+            "QUIT",
+        ]
 
     def places_menu_items(self) -> list[str | Place]:
         return ["SAVE HERE", *self.saved.places, "BACK"]
@@ -506,10 +545,11 @@ class App:
             self.go_to(item)
 
     def save_place(self) -> None:
-        """Remember where the plane (or the ghost camera) is now."""
-        if self.aircraft.state is FlightState.CRASHED and not self.ghost:
+        """Remember where the plane (or the ghost or photo camera) is now."""
+        free = self.ghost or self.mode is Mode.PHOTO
+        if self.aircraft.state is FlightState.CRASHED and not free:
             return
-        source = self.camera if self.ghost else self.aircraft
+        source = self.camera if free else self.aircraft
         place = self.saved.add_place(
             source.x, source.y, source.altitude, source.heading
         )
@@ -589,6 +629,113 @@ class App:
         agl = plane.altitude - self.world.height_at(plane.x, plane.y)
         in_cloud = self.clouds.inside(plane.x, plane.y, plane.altitude)
         return turbulence_intensity(self.weather.current, agl, slope, in_cloud)
+
+    # --- photo mode -------------------------------------------------------
+
+    @property
+    def zoom(self) -> float:
+        """How much larger things look than at the normal field of view."""
+        return self.renderer.focal / self.base_renderer.focal
+
+    def enter_photo(self) -> None:
+        """Freeze everything and hand the camera to the player."""
+        cam, plane = self.camera, self.aircraft
+        self.photo_return = (cam.x, cam.y, cam.altitude, cam.heading, cam.pitch)
+        self.photo_return += (cam.roll,)
+        target = np.array([plane.x, plane.y, plane.altitude])
+        self.photo = FreeCamera(cam, target)
+        if self.ghost:  # nothing to circle: look around from here
+            self.photo.anchor = np.array(cam.position, dtype=float)
+            self.photo.toggle_mode()
+        self.photo_requested = False
+        self.mode = Mode.PHOTO
+
+    def exit_photo(self) -> None:
+        self.set_fov(0)
+        cam = self.camera
+        cam.x, cam.y, cam.altitude, cam.heading, cam.pitch, cam.roll = self.photo_return
+        self.photo = None
+        self.mode = Mode.FLYING
+        if not self.ghost:
+            self.chase.reset()
+            self.follow_aircraft()
+
+    def set_fov(self, index: int) -> None:
+        """Zoom by swapping in a renderer for another field of view."""
+        self.photo_fov = index
+        fov = config.PHOTO_FOVS[index]
+        base = self.base_renderer
+        if index == 0:
+            renderer = base
+        else:
+            if fov not in self.zoomed_renderers:
+                settings = replace(base.settings, fov_degrees=fov)
+                self.zoomed_renderers[fov] = VoxelRenderer(W, H, settings)
+            renderer = self.zoomed_renderers[fov]
+        renderer.visibility = self.renderer.visibility
+        self.renderer = renderer
+
+    def update_photo(self) -> None:
+        """Move the camera; nothing else in the world moves."""
+        if pressed(Action.PHOTO) or pressed(Action.PAUSE):
+            self.exit_photo()
+            return
+        photo, ground = self.photo, self.world.height_at
+        if pyxel.btnp(pyxel.KEY_TAB):
+            photo.toggle_mode()
+        if pressed(Action.ZOOM_IN) and self.photo_fov < len(config.PHOTO_FOVS) - 1:
+            self.set_fov(self.photo_fov + 1)
+        if pressed(Action.ZOOM_OUT) and self.photo_fov > 0:
+            self.set_fov(self.photo_fov - 1)
+        if pyxel.btnp(pyxel.KEY_V):
+            self.cycle_weather()
+            self.weather.update(self.weather.transition)  # no blend: show it now
+            self.apply_weather()
+            self.show_toast(f"WEATHER: {self.weather.current.name}")
+        if pyxel.btnp(pyxel.KEY_F):
+            self.photo_frame = not self.photo_frame
+        if pyxel.btnp(pyxel.KEY_O):
+            self.photo_plane = not self.photo_plane
+        if pressed(Action.HUD_MODE):
+            self.photo_help = not self.photo_help
+        if pressed(Action.SAVE_PLACE):
+            self.save_place()
+        if pressed(Action.CONFIRM):
+            self.photo_requested = True  # taken when the frame is drawn
+
+        def keys(positive: int, negative: int) -> float:
+            return float(pyxel.btn(positive) - pyxel.btn(negative))
+
+        turn = keys(pyxel.KEY_RIGHT, pyxel.KEY_LEFT)
+        tilt = keys(pyxel.KEY_UP, pyxel.KEY_DOWN)
+        if photo.mode is FreeMode.ORBIT:
+            photo.orbit(turn, tilt, keys(pyxel.KEY_W, pyxel.KEY_S), DT, ground)
+        else:
+            photo.fly(
+                turn,
+                tilt,
+                keys(pyxel.KEY_W, pyxel.KEY_S),
+                keys(pyxel.KEY_D, pyxel.KEY_A),
+                keys(pyxel.KEY_E, pyxel.KEY_Q),
+                DT,
+                ground,
+                fast=pyxel.btn(pyxel.KEY_SHIFT),
+            )
+        self.world.update(self.camera.x, self.camera.y)
+
+    def take_photo(self) -> None:
+        """Save the screen as it is now, before any help text is drawn on it."""
+        self.photo_requested = False
+        cam = self.camera
+        lighting = palette.LIGHTINGS[self.lighting].name
+        try:
+            path = self.store.photo_path(self.seed, cam.x, cam.y, lighting)
+            pyxel.screen.save(str(path), config.PHOTO_SCALE)
+        except OSError:
+            self.show_toast("COULD NOT SAVE PHOTO")
+            return
+        self.photo_flash_until = time.perf_counter() + config.PHOTO_FLASH
+        self.show_toast(f"PHOTO SAVED: {path.name}.png", 3.0)
 
     def show_toast(self, text: str, seconds: float = TOAST_SECONDS) -> None:
         self.toast = text
@@ -851,6 +998,8 @@ class App:
                     *self.map_settlements(),
                     set(self.saved.landmarks),
                 )
+            case Mode.PHOTO:
+                self.draw_photo()
             case Mode.FLYING | Mode.PAUSED:
                 self.draw_view()
                 if self.mode is Mode.PAUSED:
@@ -887,16 +1036,18 @@ class App:
             nearby,
             self.camera,
             self.renderer,
-            WRECK_FULL_SIZE_DISTANCE,
+            WRECK_FULL_SIZE_DISTANCE * self.zoom,
             WRECK_TILT,
         )
         if self.race:
             draw_rings(self.race, self.camera, self.renderer)
             self.draw_record_ghost()
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
-        if chase and not self.ghost:
+        if chase and not self.ghost and self.mode is not Mode.PHOTO:
             self.draw_plane()
         self.draw_rain()
+        if self.mode is Mode.PHOTO:
+            return
         match self.hud_mode:
             case HudMode.NONE:
                 return
@@ -921,6 +1072,51 @@ class App:
             ring = self.race.course.rings[self.race.next_ring]
             draw_ring_arrow(ring, self.camera, self.renderer)
             self.hud.race_panel(self.race, self.race_flash)
+
+    def draw_photo(self) -> None:
+        self.draw_view()
+        plane = self.aircraft
+        if (
+            self.photo_plane
+            and not self.ghost
+            and plane.state is not FlightState.CRASHED
+        ):
+            draw_aircraft(
+                self.plane_views,
+                TRANSPARENT,
+                np.array([plane.x, plane.y, plane.altitude]),
+                plane.forward,
+                plane.up,
+                self.camera,
+                self.renderer,
+                config.PHOTO_PLANE_SPAN,
+            )
+        if self.photo_frame:
+            bar = H // 9
+            pyxel.rect(0, 0, W, bar, pyxel.COLOR_BLACK)
+            pyxel.rect(0, H - bar, W, bar, pyxel.COLOR_BLACK)
+        if self.photo_requested:
+            self.take_photo()
+        if time.perf_counter() < self.photo_flash_until:
+            pyxel.dither(0.5)
+            pyxel.rect(0, 0, W, H, pyxel.COLOR_WHITE)
+            pyxel.dither(1.0)
+        if self.photo_help:
+            self.draw_photo_help()
+
+    def draw_photo_help(self) -> None:
+        orbit = self.photo.mode is FreeMode.ORBIT
+        fov = config.PHOTO_FOVS[self.photo_fov]
+        shadow_text(4, 4, f"PHOTO  {self.photo.mode.value}  FOV {fov:.0f}", HUD)
+        lines = [
+            "ARROWS CIRCLE  W/S CLOSER/FURTHER  TAB FLY"
+            if orbit
+            else "ARROWS LOOK  W/S/A/D MOVE  Q/E DOWN/UP  TAB ORBIT",
+            "Z/X ZOOM  T TIME  V WEATHER  F FRAME  O PLANE",
+            "ENTER SAVE  L PLACE  H HELP  F2 BACK",
+        ]
+        for i, line in enumerate(lines):
+            shadow_text(4, H - 8 * (len(lines) - i), line, TEXT)
 
     def draw_rain(self) -> None:
         """Rain falls below the clouds; it thins out climbing up into them."""
@@ -948,7 +1144,10 @@ class App:
     def draw_objects(self) -> None:
         """Trees and houses near the camera, and lighthouses further out."""
         cam = self.camera
-        near = self.world.objects_near(cam.x, cam.y, config.OBJECT_DRAW_DISTANCE)
+        reach = min(
+            config.OBJECT_DRAW_DISTANCE * self.zoom, self.world.levels[0].safe_radius
+        )
+        near = self.world.objects_near(cam.x, cam.y, reach)
         near = near.select(near.kind != Kind.LIGHTHOUSE)  # drawn below, further out
         lights = self.lighthouses_near(config.LIGHTHOUSE_DRAW_DISTANCE)
         if lights:
@@ -966,7 +1165,7 @@ class App:
             near.position,
             cam,
             self.renderer,
-            self.object_full_size,
+            [f * self.renderer.focal for f in self.object_full_size_per_focal],
             variants=base[near.kind] + near.variant,
             scales=near.scale,
             limit=config.OBJECT_LIMIT,

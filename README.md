@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6 och 7a–7e klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Nästa steg är fas 8: fotoläge, repris, bränsle, flygplanstyper, floder, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 pågår: fotoläget är klart, och kvar är repris, bränsle, flygplanstyper, floder, trafik och utmärkelser.
 
 ---
 
@@ -209,7 +209,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `L` | – | Spara platsen (pausmenyn → *PLACES* för att flyga dit eller ta bort) |
 | `R` | `Back` | Respawn (startskärm: slumpa seed, gamepad `Y`) |
 | `M` | `X` | Stor karta (`Z`/`X` eller `R1`/`L1` zoomar) |
-| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), ny värld, avsluta |
+| `Esc` / `P` | `Start` | Pausmeny: fortsätt, respawn, platser, tidslopp (ny / kör igen / avsluta), väder (AUTO → CLEAR → … → STORM), fotoläge, ny värld, avsluta |
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
@@ -218,6 +218,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `Esc` / `Q` på startskärmen | – | Avsluta |
 | `C` | `Y` | Cockpit / jaktkamera |
 | `T` | Höger spak (klick) | Tid på dygnet: dag → skymning → natt |
+| `F2` | – | Fotoläge (även i pausmenyn). Hjälptexten i bild visar tangenterna: `Tab` kretsa/flyg, `Z`/`X` zoom, `V` väder, `F` ram, `O` planet, `Enter` spara bild, `H` hjälptext |
 
 ### Ljud
 
@@ -257,6 +258,7 @@ pyxel-flight-sim/
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
 │       │   ├── camera.py      # kamerans position och orientering
+│       │   ├── freecam.py     # fri kamera för fotoläget: kretsa runt planet eller flyg
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
 │       │   └── chase.py       # jaktkamera och projektion av punkter till skärmen
 │       ├── audio.py           # motor, vind, varningar, krasch, menyljud
@@ -271,7 +273,8 @@ pyxel-flight-sim/
     ├── test_aircraft.py       # planflygning, svängar, stall, landning, krascher
     ├── test_controls.py       # tangentbord + gamepad, dödzon, knapprepetition
     ├── test_effects.py        # ljudval, jaktkamera, sprite, vågor, moln
-    └── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
+    ├── test_weather.py        # vindavdrift, övergångar, låsning, turbulens, molntäckning, regn
+    └── test_photo.py          # fri kamera, planets vyer från olika håll, fotonamn
 ```
 
 ## Implementationsplan
@@ -782,7 +785,7 @@ Fotoläget (8a) och repriserna (8b) använder samma kod.
 
 ---
 
-#### 8a – Fotoläge *(liten)*
+#### 8a – Fotoläge ✅
 
 Målet är att kunna stanna tiden, ställa upp en bild och spara den.
 
@@ -792,6 +795,35 @@ Målet är att kunna stanna tiden, ställa upp en bild och spara den.
 - **Platser:** i fotoläget kan man spara kamerans position som plats (7a), så att man kan flyga dit igen.
 
 **Tester:** att simuleringen inte stegar när den är fryst (planets och partiklarnas tillstånd är oförändrat efter N bildrutor), att kameran håller sig inom gränsen och ovanför terrängen, och att filnamnet blir rätt. **Klart när:** man kan stanna mitt i en loop i skymning, kretsa runt planet och spara en bild utan HUD.
+
+**Resultat:**
+- **Läget:** `F2` eller *PHOTO MODE* i pausmenyn ger `Mode.PHOTO`. Där uppdateras bara kameran och terrängen runt den. Planet, partiklarna, molnen, vågorna, regnet och vädrets tid står still, och ljudet tystnar. `F2` eller `Esc` tar en tillbaka till cockpit, jaktkamera, spökkamera eller kraschvy, precis som innan.
+- **Fri kamera** ([sim/freecam.py](src/flightsim/sim/freecam.py)):
+  - *ORBIT* kretsar runt planet med piltangenterna, och `W`/`S` går närmare eller längre bort (8–300 enheter). Kameran siktar alltid mitt på planet, även när en backe trycker upp den.
+  - Från cockpit börjar kameran 25 enheter bakom och ovanför planet. Från spökkameran börjar den i *FLY*.
+  - *FLY* (`Tab`) vrider och flyttar kameran som en drönare: `W`/`S`/`A`/`D` framåt, bakåt och åt sidorna, `Q`/`E` ned och upp, och `Shift` för fyra gånger snabbare. Vid byte mellan lägena ligger bilden kvar.
+  - Kameran håller sig minst 3 enheter över marken och högst 400 enheter från planet.
+- **Planet från alla håll:** sprites bakifrån, framifrån (propeller, vindruta och hjul), från sidan och ovanifrån (`PLANE_REAR`, `PLANE_FRONT`, `PLANE_SIDE` och `PLANE_TOP`). Vingspetsarna har röd och grön lanterna, så att man ser vilket håll planet vetter åt.
+  - `aircraft_pose` väljer den axel hos planet som pekar mest längs synlinjen: nosen ger bakifrån eller framifrån, en vinge ger sidan och ovansidan ger ovanifrån. Underifrån speglas vyn ovanifrån.
+  - Spriten vrids så att dess ovansida följer planets uppåtriktning i bild. Vyn ovanifrån vrids i stället efter nosen. Sidovyn speglas när nosen annars skulle peka fel, vilket också sköter ryggläge.
+  - `draw_aircraft` skalar efter avståndet och döljer planet bakom terräng. Det är gemensam grund 3, som repriser och trafik ska använda.
+  - **Rättat efteråt:** framifrån såg först nästan likadant ut som bakifrån, och snett ovanifrån valdes sidovyn och lutade som om planet dök. Det fanns ingen vy ovanifrån.
+- **I bilden:**
+  - `Z`/`X` zoomar i fem steg (90°, 70°, 50°, 35° och 25° synfält). Varje steg använder en egen renderare som byggs första gången (~7 ms). Sprites skalas med zoomen, och träd ritas längre bort när man zoomar in.
+  - `T` byter tid på dygnet och `V` byter väder direkt, utan övergång.
+  - `F` ger letterbox-ram, `O` döljer planet och `L` sparar kamerans plats.
+  - `H` döljer hjälptexten.
+- **Spara:** `Enter` sparar bilden med `pyxel.screen.save` i skala 3 till `photos/` i spardatamappen, till exempel `seed1337_x-39_y-135_day.png`. Ett befintligt namn får `_2`, `_3` och så vidare. Bilden tas innan hjälptext, blixt och toast ritas, så de kommer aldrig med.
+- **Tester:** 16 nya (totalt 205):
+  - Kamerans start och omloppsbana: att kameran kliver bakåt från cockpit, att målet stannar mitt i bild, att avståndet hålls vid kretsande och ändras vid zoom, och att kameran håller sig över en ås och ändå tittar ned på målet.
+  - Flygning och lägesbyte: att flygning följer blicken och håller sig inom räckvidden, och att bilden ligger kvar vid byte mellan lägena.
+  - Planets vyer: ett helt varv runt planet (bakifrån, sida, framifrån, sida), ovanifrån och underifrån, lutning, stigning rakt upp, ryggläge och att sidovyn inte lutar snett ovanifrån.
+  - Fotonamn utan överskrivning.
+- **Provkört i riktigt fönster** med en skriptad tur:
+  - Från luften: fotoläge, kretsa och tilta, en bild, fyra väderbyten till regn, zoom till 50°, ram, en till bild, *FLY* och tillbaka.
+  - Planets läge, speltiden, partiklarna och molnens förskjutning var exakt desamma efter 160 bildrutor i fotoläget.
+  - De sparade bilderna saknar hjälptext och toast men har ram och regn.
+- **Inte gjort:** synfältet ändras i steg och inte steglöst. Ingen vinjett, bara letterbox-ram.
 
 #### 8b – Repris av den senaste minuten *(medel)*
 
