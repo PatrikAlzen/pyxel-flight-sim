@@ -34,6 +34,7 @@ class Action(Enum):
     SAVE_PLACE = auto()
     DELETE = auto()
     TIME_OF_DAY = auto()
+    HUD_MODE = auto()
 
 
 BINDINGS: dict[Action, tuple[int, ...]] = {
@@ -60,6 +61,7 @@ BINDINGS: dict[Action, tuple[int, ...]] = {
         pyxel.GAMEPAD1_BUTTON_X,
     ),
     Action.TIME_OF_DAY: (pyxel.KEY_T, pyxel.GAMEPAD1_BUTTON_RIGHTSTICK),
+    Action.HUD_MODE: (pyxel.KEY_H, pyxel.GAMEPAD1_BUTTON_LEFTSTICK),
 }
 
 

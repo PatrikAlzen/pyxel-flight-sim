@@ -44,7 +44,15 @@ from flightsim.render.effects import (
     project_points,
 )
 from flightsim.render.framebuffer import image_array, screen_array
-from flightsim.render.hud import HUD, TEXT, Hud, centered_text, shaded_rect, shadow_text
+from flightsim.render.hud import (
+    HUD,
+    TEXT,
+    Hud,
+    HudMode,
+    centered_text,
+    shaded_rect,
+    shadow_text,
+)
 from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
     BROADLEAF,
@@ -181,6 +189,7 @@ class App:
         self.load_total = 1
         self.progress = 0.0
         self.show_debug = False
+        self.hud_mode = HudMode.FULL
         self.render_time = Timer()
         self.frame_time = Timer()
         self.last_frame = time.perf_counter()
@@ -222,6 +231,9 @@ class App:
     # --- update -----------------------------------------------------------
 
     def update(self) -> None:
+        if pressed(Action.HUD_MODE):
+            self.hud_mode = self.hud_mode.next()
+            self.show_toast(self.hud_mode.value)
         if pressed(Action.DEBUG):
             self.show_debug = not self.show_debug
         if pressed(Action.TIME_OF_DAY):
@@ -799,12 +811,20 @@ class App:
         if self.race:
             draw_rings(self.race, self.camera, self.renderer)
             self.draw_record_ghost()
+        chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
+        if chase and not self.ghost:
+            self.draw_plane()
+        match self.hud_mode:
+            case HudMode.NONE:
+                return
+            case HudMode.MINIMAP:
+                self.hud.minimap(
+                    self.aircraft if not self.ghost else self.camera, self.world
+                )
+                return
         if self.ghost:
             centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
-        chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
-        if chase:
-            self.draw_plane()
         self.hud.draw(
             self.aircraft,
             self.camera,

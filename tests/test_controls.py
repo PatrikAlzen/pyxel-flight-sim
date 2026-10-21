@@ -69,6 +69,7 @@ def test_keyboard_and_gamepad_are_combined_and_clamped(fake_input):
         (pyxel.KEY_RETURN, Action.CONFIRM),
         (pyxel.GAMEPAD1_BUTTON_A, Action.CONFIRM),
         (pyxel.GAMEPAD1_BUTTON_DPAD_DOWN, Action.DOWN),
+        (pyxel.KEY_H, Action.HUD_MODE),
     ],
 )
 def test_actions_work_from_keyboard_and_gamepad(fake_input, key, action):
@@ -87,3 +88,12 @@ def test_only_navigation_repeats(monkeypatch):
     calls.clear()
     controls.pressed(Action.PAUSE)
     assert not any(kw.get("repeat") for kw in calls)
+
+
+def test_hud_mode_cycles_full_minimap_none():
+    from flightsim.render.hud import HudMode
+
+    seen = [HudMode.FULL]
+    for _ in range(3):
+        seen.append(seen[-1].next())
+    assert seen == [HudMode.FULL, HudMode.MINIMAP, HudMode.NONE, HudMode.FULL]

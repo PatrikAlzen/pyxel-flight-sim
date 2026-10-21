@@ -12,6 +12,7 @@ Layout (256x144):
 
 import math
 import time
+from enum import Enum
 
 import numpy as np
 import pyxel
@@ -52,6 +53,18 @@ def shaded_rect(x: float, y: float, w: float, h: float) -> None:
     pyxel.dither(0.5)
     pyxel.rect(x, y, w, h, pyxel.COLOR_BLACK)
     pyxel.dither(1.0)
+
+
+class HudMode(Enum):
+    """What is drawn over the view; H cycles through them in this order."""
+
+    FULL = "HUD ON"
+    MINIMAP = "MINIMAP ONLY"
+    NONE = "HUD OFF"
+
+    def next(self) -> HudMode:
+        modes = list(HudMode)
+        return modes[(modes.index(self) + 1) % len(modes)]
 
 
 class Hud:

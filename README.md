@@ -213,6 +213,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `Enter` / `Space` | `A` | Bekräfta |
 | `↑` / `↓` på startskärmen | D-pad | Starta i luften eller på närmaste landningsbana |
 | `G` | – | Spökkamera av/på (planet respawnar där kameran är) |
+| `H` | Vänster spak (klick) | HUD-läge: full HUD → bara minikarta → ingen HUD |
 | `F1` | – | Debug-överlägg (FPS, tiles, koordinater, flygtillstånd) |
 | `Esc` / `Q` på startskärmen | – | Avsluta |
 | `C` | `Y` | Cockpit / jaktkamera |
