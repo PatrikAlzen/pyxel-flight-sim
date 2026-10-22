@@ -1256,6 +1256,11 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
 - **Inte gjort:**
   - Roder som rör sig med spaken, skugga på marken och kabinram i cockpitvyn.
   - Modellerna och broarna sorteras inte mot varandra, så modellen ritas alltid ovanpå en bro.
+- **Efteråt: flygplanet på startskärmen.** Till höger om valen visas det valda planet som en roterande modell i en inramad ruta, sett lite ovanifrån och med snurrande propeller. Det byts direkt när man väljer en annan typ.
+  - Rutan har en egen renderare, så att ingen terräng från en tidigare värld kan dölja modellen.
+  - Planet roterar runt sin egen mitt, och en egen kamera tittar rakt på det. Rutan har en renderare i sin egen storlek, och `pyxel.camera` flyttar ritningen dit. Avståndet väljs så att sfären runt modellen ryms i rutan, och en roterande modell lämnar aldrig sin sfär.
+  - **Rättat efteråt:** först räknades avståndet efter längsta måttet, och planet roterade runt flygmodellens referenspunkt och sågs snett från skärmens mitt. Då stack flera plan ut i högerkanten i vissa vinklar. Ett test vrider nu alla fyra typerna ett varv i 5-gradiga steg och kräver att varje hörn ligger innanför rutan. Ett test till kontrollerar att inget ritas utanför den.
+  - Raderna med val är centrerade i ytan till vänster om rutan.
 - **Efteråt: hangarer i 3D** ([render/buildings.py](src/flightsim/render/buildings.py)). En hangar som bild vred sig mot kameran och såg märklig ut på nära håll.
   - Nu är hangarer som blir minst 16 pixlar breda (inom ~290 enheter) modeller: grå väggar under ett välvt tak av ljus plåt i sex segment och en mörk port mot banan. Längre bort är de bilder som förut.
   - Hangaren är ett **prisma**, en ny byggsten i `mesh.py`: en konvex profil som sträcks ut, med en ramp per sida och ytorna vända utåt av sig själva.

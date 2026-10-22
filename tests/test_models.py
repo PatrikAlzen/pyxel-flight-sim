@@ -159,3 +159,41 @@ def test_hangar_door_faces_the_runway_and_only_shows_from_the_front(screen):
     assert draw_mesh(door, ground, facing, UP, in_front, renderer, outline=None) == 1
     assert draw_mesh(door, ground, facing, UP, behind, renderer, outline=None) == 0
     assert draw_mesh(shell, ground, facing, UP, behind, renderer) > 0
+
+
+@pytest.mark.parametrize("kind", range(len(TYPES)))
+def test_title_screen_model_fits_its_frame_at_every_angle(kind):
+    """Planes used to reach past the frame's right edge at some angles."""
+    from flightsim.render.models import showcase_pose
+    from flightsim.render.voxel import VoxelRenderer
+
+    renderer = VoxelRenderer(54, 48)  # the frame's inside
+    for degrees in range(0, 360, 5):
+        mesh, position, forward, up, camera = showcase_pose(
+            kind, math.radians(degrees), renderer
+        )
+        world = place(mesh, position, forward, up)
+        points = [camera.project(p, renderer.focal, 54, 48) for p in world]
+        xs = np.array([p[0] for p in points])
+        ys = np.array([p[1] for p in points])
+        # A pixel of outline goes round it, so one more pixel must be free.
+        assert xs.min() >= 1 and xs.max() <= 53, (degrees, xs.min(), xs.max())
+        assert ys.min() >= 1 and ys.max() <= 47, (degrees, ys.min(), ys.max())
+        assert xs.max() - xs.min() > 20  # and it is not tiny
+
+
+def test_title_screen_model_draws_only_inside_its_frame(screen):
+    from flightsim.render.framebuffer import screen_array
+    from flightsim.render.models import draw_showcase
+    from flightsim.render.voxel import VoxelRenderer
+
+    frame = (196, 54, 56, 50)
+    renderer = VoxelRenderer(54, 48)
+    for degrees in range(0, 360, 30):
+        screen_array()[:] = SKY
+        draw_showcase(2, math.radians(degrees), frame, renderer)
+        image = screen_array()
+        inside = image[55:103, 197:251]
+        assert (inside != SKY).any()
+        image[55:103, 197:251] = SKY
+        assert (image == SKY).all()  # nothing drawn outside the frame

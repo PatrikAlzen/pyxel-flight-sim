@@ -218,3 +218,56 @@ def draw_wreck(
 ) -> None:
     where, forward, up = wreck_pose(position)
     draw_mesh(WRECKS[kind], where, forward, up, camera, renderer)
+
+
+SHOWCASE_PITCH = -0.35  # the turning model on the title screen is seen from above
+SHOWCASE_MARGIN = 2.0  # pixels kept clear inside the frame
+
+
+def showcase_pose(
+    kind: int, angle: float, renderer: VoxelRenderer, propeller: float = 0.0
+) -> tuple[Mesh, np.ndarray, np.ndarray, np.ndarray, Camera]:
+    """Aircraft type ``kind`` turned ``angle`` radians about its own middle,
+    in front of a camera looking straight at it, far enough away that it fits
+    ``renderer``'s picture at every angle: (mesh, position, forward, up, camera).
+
+    The fit uses the sphere round the model, which a turning model never
+    leaves, so nothing reaches past the edge however it is turned.
+    """
+    mesh = plane_mesh(kind, propeller)
+    v = mesh.vertices
+    middle = (v.min(axis=0) + v.max(axis=0)) / 2
+    radius = float(np.linalg.norm(v - middle, axis=1).max())
+    room = min(renderer.width, renderer.height) / 2 - SHOWCASE_MARGIN
+    # A sphere of radius r at distance d looks r / sqrt(d^2 - r^2) wide.
+    distance = radius * math.sqrt(1 + (renderer.focal / room) ** 2)
+    camera = Camera(pitch=SHOWCASE_PITCH)
+    look, _, _ = camera.basis()
+    forward = np.array([math.sin(angle), -math.cos(angle), 0.0])
+    up = np.array([0.0, 0.0, 1.0])
+    right = np.cross(up, forward)
+    offset = middle[0] * right + middle[1] * forward + middle[2] * up
+    position = np.array(camera.position) + look * distance - offset
+    return mesh, position, forward, up, camera
+
+
+def draw_showcase(
+    kind: int,
+    angle: float,
+    frame: tuple[int, int, int, int],
+    renderer: VoxelRenderer,
+    propeller: float = 0.0,
+) -> None:
+    """The model turning inside ``frame`` (x, y, w, h); ``renderer`` is the size
+    of the frame's inside, so the camera looks straight at the model."""
+    x0, y0, _, _ = frame
+    mesh, position, forward, up, camera = showcase_pose(
+        kind, angle, renderer, propeller
+    )
+    # Draw as if the frame's inside were the screen. The clip rectangle is in
+    # screen coordinates and does not move with the camera.
+    pyxel.camera(-(x0 + 1), -(y0 + 1))
+    pyxel.clip(x0 + 1, y0 + 1, renderer.width, renderer.height)
+    draw_mesh(mesh, position, forward, up, camera, renderer)
+    pyxel.clip()
+    pyxel.camera()

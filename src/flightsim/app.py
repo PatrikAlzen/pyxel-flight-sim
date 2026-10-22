@@ -57,7 +57,13 @@ from flightsim.render.hud import (
     shaded_rect,
     shadow_text,
 )
-from flightsim.render.models import LOD_PIXELS, draw_plane, draw_wreck, wreck_size
+from flightsim.render.models import (
+    LOD_PIXELS,
+    draw_plane,
+    draw_showcase,
+    draw_wreck,
+    wreck_size,
+)
 from flightsim.render.rain import Rain
 from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
@@ -120,6 +126,8 @@ TOAST_SECONDS = 2.0
 RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
 PROPELLER_SPEED = 30.0  # radians per second at full throttle
 ACHIEVEMENT_ROWS = 9  # shown at once in the pause menu's list
+SHOWCASE = (196, 54, 56, 50)  # title screen frame for the turning aircraft
+SHOWCASE_TURN = 0.025  # radians per frame
 TITLE_ROWS = ("START", "AIRCRAFT", "SEED")  # top to bottom on the title screen
 REPLAY_VIEWS = ("CHASE", "COCKPIT", "TOWER", "FREE")  # C cycles through them
 
@@ -175,6 +183,8 @@ class App:
         self.world: TerrainWorld | None = None
         self.world_map: WorldMap | None = None
         self.renderer = VoxelRenderer(W, H)
+        # The title screen's turning aircraft: nothing in the world may hide it.
+        self.showcase = VoxelRenderer(SHOWCASE[2] - 2, SHOWCASE[3] - 2)
         self.base_renderer = self.renderer  # the photo mode zooms with others
         self.zoomed_renderers: dict[float, VoxelRenderer] = {}
         self.hud = Hud(self.renderer.focal, config.RESPAWN_DELAY)
@@ -1995,19 +2005,40 @@ class App:
         centered_text(H - 21, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  R RANDOM", HUD)
         start = "ON A RUNWAY" if self.start_on_runway else "IN THE AIR"
         shaded_rect(0, 62, W, 28)
-        self.title_line(64, "START", f"START {start}")
+        self.title_line(64, "START", f"START {start}", SHOWCASE[0] / 2)
         plane = self.plane_type
-        self.title_line(74, "AIRCRAFT", f"AIRCRAFT {plane.name}")
-        centered_text(83, plane.description, pyxel.COLOR_GRAY)
+        self.title_line(74, "AIRCRAFT", f"AIRCRAFT {plane.name}", SHOWCASE[0] / 2)
+        shadow_text(
+            SHOWCASE[0] / 2 - len(plane.description) * 2,
+            83,
+            plane.description,
+            pyxel.COLOR_GRAY,
+        )
+        self.draw_showcase()
         if pyxel.frame_count // 15 % 2 == 0:
             centered_text(H - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
 
-    def title_line(self, y: int, row: str, text: str) -> None:
-        """One choice on the title screen; the selected one has arrows."""
+    def title_line(self, y: int, row: str, text: str, middle: float = W / 2) -> None:
+        """One choice on the title screen, centred on ``middle``; the selected
+        one has arrows."""
         if TITLE_ROWS[self.title_row] == row:
-            centered_text(y, f"<  {text}  >", pyxel.COLOR_YELLOW)
+            text, color = f"<  {text}  >", pyxel.COLOR_YELLOW
         else:
-            centered_text(y, text, pyxel.COLOR_LIGHT_BLUE)
+            color = pyxel.COLOR_LIGHT_BLUE
+        shadow_text(middle - len(text) * 2, y, text, color)
+
+    def draw_showcase(self) -> None:
+        """The chosen aircraft turning slowly in a frame beside the choices."""
+        x0, y0, w, h = SHOWCASE
+        pyxel.rect(x0, y0, w, h, pyxel.COLOR_NAVY)
+        pyxel.rectb(x0, y0, w, h, HUD)
+        draw_showcase(
+            TYPES.index(self.plane_type),
+            pyxel.frame_count * SHOWCASE_TURN,
+            SHOWCASE,
+            self.showcase,
+            propeller=pyxel.frame_count * 0.6,
+        )
 
     def draw_loading(self) -> None:
         pyxel.cls(pyxel.COLOR_NAVY)
