@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8h klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8h är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik och utmärkelser. Nästa steg är 8i: flygplan som 3D-modeller.
+> **Status:** fas 0–6, 7a–7e och 8a–8i klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser och flygplan som 3D-modeller.
 
 ---
 
@@ -257,6 +257,8 @@ pyxel-flight-sim/
 │       │   ├── hud.py         # instrument: kompass, fart/höjd-band, tipp-stege, gas, minikarta, tidsloppspanel
 │       │   ├── rings.py       # tidsloppets ringar i 3D och pilen mot nästa ring
 │       │   ├── bridges.py     # broar i 3D: lådor klippta mot kameran, dimma, räcken
+│       │   ├── mesh.py        # 3D-modeller: placering, skuggning, kontur, klippning
+│       │   ├── models.py      # flygplanens och vrakens modeller, modell eller sprite
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
@@ -290,6 +292,7 @@ pyxel-flight-sim/
     ├── test_bridges.py        # placering, fri höjd, kollision, passage, klippning, fart
     ├── test_traffic.py        # rutter bana till bana, frigång, lutning, tidtabell, kollision
     ├── test_achievements.py   # detektorer med syntetiska flygbanor, händelser, räknare
+    ├── test_models.py         # orientering, synliga ytor, kontur, klippning, nivåbyte, vrak
     └── conftest.py            # gemensamt headless Pyxel-fönster för tester som ritar
 ```
 
@@ -1186,7 +1189,7 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
   - Första körningen gav också *LOW LOOP* för en loop ~270 över marken: den lägsta höjden räknades över hela fönstret, inklusive den låga stigningen efter starten, och respawnen rakt uppåt räknades inte som ett hopp. Nu räknas bara bildrutor där nosen vrids, och hopp mäts i 3D.
 - **Inte gjort:** *BEAT RECORD* ges bara när det redan fanns ett rekord för fältet och typen.
 
-#### 8i – Flygplan som 3D-modeller *(medel)*
+#### 8i – Flygplan som 3D-modeller ✅
 
 Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget, repriserna och trafiken nära, i stället för sprites som bara kan vridas i bank.
 
@@ -1222,6 +1225,35 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
 - Broar: att de ser likadana ut och är lika snabba med den gemensamma ritaren.
 
 **Risk:** utan djupbuffert ritas ytorna i avståndsordning. Där delar går in i varandra, som vingen genom kroppen, kan fel yta hamna överst i vissa vinklar. Det mildras med delar som möts men inte överlappar, och sortering per yta i stället för per del. Små trianglar på avstånd blir pixelbrus, och därför används sprites där. **Klart när:** jaktvy, foton och repriser visar typernas modeller med kontur från alla håll utan märkbara sorteringsfel, och bildrutan inte blir märkbart långsammare än i dag.
+
+**Resultat:**
+- **Modellritare** ([render/mesh.py](src/flightsim/render/mesh.py)): `Mesh` med hörn och ytor (fyrhörningar, eller trianglar som upprepar sista hörnet) och en terrängramp per yta, och delade kanter mellan två ytor för konturen.
+  - Byggs av lådor (`box`, med avsmalnande nos och sluttande ovansida), sätts ihop (`Mesh.merge`) och vrids (`Mesh.turned`).
+  - `place` placerar modellen med planets position och framåt- och uppvektor. x är högervingen, `up × forward` som i flygmodellen.
+  - Den ramen är vänsterhänt, eftersom höger × framåt är ner. Därför räknas normalerna med omvänd ordning. Ett test fångade att den första versionen antingen ritade planet spegelvänt eller ritade baksidorna.
+  - `draw_mesh` räknar alla hörn, normaler, synliga ytor, nyanser (solen ger nyansen i rampen, avståndet ger dimnivån) och djup på en gång. Ytorna fylls längst bort först med `pyxel.tri`, och bara ytor som når bakom kameran klipps i Python.
+  - Klippningen och projektionen är flyttade hit från broarna, som nu använder dem härifrån.
+- **Kontur:** siluettkanterna (mellan en synlig och en bortvänd yta) ritas först, en pixel utåt åt alla fyra håll, och ytorna ovanpå. Kvar blir en tunn mörk ram runt hela planet som på spritesen. Prototypens kontur ovanpå ytorna gjorde planen till svarta klumpar, eftersom varje låda fick sin egen kant.
+- **Modeller** ([render/models.py](src/flightsim/render/models.py)), byggda av lådor i världsenheter med hjul och flottörer ned till `gear_height`:
+  - `TRAINER` (84 ytor): högvingat, kabinglas, fena och stjärtsporre.
+  - `STUNT` (96 ytor): dubbeldäckare med stag och öppen sittbrunn.
+  - `CARGO` (114 ytor): lång kropp, två motorer på vingen, fyra hjul och hög fena.
+  - `SEAPLANE` (90 ytor): flottörer på stag.
+  - Färgerna är typens kropps- och detaljfärg som ramper (snö för vitt, tak för rött, klippa för grått, sand för gult, öken för brunt, vatten för ljusblått). Kabinglaset är djupt vatten och däck och propellrar asfalt.
+  - Propellrarna snurrar med gasen (trafiken med jämn fart).
+- **Vrak:** varje typs modell med allt till höger om en stump avbrutet, stjärten vriden 0,45 rad åt sidan och två av fem ytor sotsvarta. Vraket ligger med nosen nedåt och lutat på sidan, i en riktning som följer av platsen och alltid blir densamma.
+- **Nivå efter storlek:** modellen används när planet blir minst 16 pixlar brett, annars spriten.
+  - Jaktvyn och kraschvyn (~26 och 40 enheter) ger alltid modellen. Fotoläget och repriserna ger modell på nära håll, och trafiken bara när den är nära.
+  - Rekordspöket är en ditherad modell vars nos följer spökets färdriktning. Vrak nära kameran är modeller och längre bort bilder.
+- **Fart:** 0,4–0,5 ms per plan på nära håll (cargo längst). Det blir oftast ett eller två samtidigt, eftersom resten av trafiken är sprites.
+- **Tester:** 12 nya (totalt 293):
+  - Orientering och modeller: placeringen (nos norrut, högervinge österut) och högervingen till höger sedd bakifrån, samt storlek och hjulhöjd för alla fyra typerna.
+  - Ritning: bara framsidor fylls (1 rakt bakifrån, 3 snett ovanifrån, 1 rakt uppifrån), konturen är nästan bara en ram mot himlen, och vingen klipps när kameran står under den.
+  - Nivåbytet efter storlek, vraken och tidsåtgången.
+- **Provkört i riktigt fönster:** jaktvy med svängar, krasch med vrakmodell i kraschvyn och repris i alla kameror. Fotoläget i sol och regn, och ett trafikplan i skymning med lanternor (som nu sitter på rätt vingar: de satt spegelvända innan).
+- **Inte gjort:**
+  - Roder som rör sig med spaken, skugga på marken och kabinram i cockpitvyn.
+  - Modellerna och broarna sorteras inte mot varandra, så modellen ritas alltid ovanpå en bro.
 
 ---
 

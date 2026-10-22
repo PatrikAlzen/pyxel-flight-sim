@@ -5,7 +5,8 @@ underneath, so bridges are drawn on top of it, like the time-trial rings. A
 deck is a row of short boxes; each box face that looks towards the camera is
 cut against a plane just in front of the camera (so a deck right overhead
 still shows), projected and filled with Pyxel triangles. Pillars are boxes
-too, and the railings are lines.
+too, and the railings are lines. Cutting and projecting are shared with the
+models in ``render/mesh.py``.
 
 There is no depth buffer: the pieces of all bridges are drawn far to near,
 and each is left out when the terrain (or thick cloud) drawn at its screen
@@ -13,19 +14,18 @@ position is nearer than it. Colours come from the terrain palette with the
 fog level for their distance, so bridges follow the time of day and weather.
 """
 
-import itertools
 import math
 
 import numpy as np
 import pyxel
 
 from flightsim.render import palette
+from flightsim.render.mesh import NEAR, View, fill_cut, line_cam
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 from flightsim.terrain.biomes import Biome
 from flightsim.terrain.bridges import PILLAR_RADIUS, Bridge
 
-NEAR = 0.5  # faces are cut this far in front of the camera
 SEGMENT = 10.0  # world units of deck per box
 MIN_PIXELS = 3.0  # bridges narrower than this on screen are not drawn
 
@@ -35,40 +35,6 @@ DECK_SIDE = (Biome.ROCK, 3)
 DECK_BOTTOM = (Biome.ROCK, 1)
 PILLAR = (Biome.ROCK, 2)
 RAILING = (Biome.ROCK, 5)
-
-
-class _View:
-    """The camera's frame, for cutting and projecting world points."""
-
-    def __init__(self, camera: Camera, renderer: VoxelRenderer) -> None:
-        self.origin = np.array(camera.position, dtype=float)
-        self.forward, self.right, self.up = camera.basis()
-        self.focal = renderer.focal
-        self.cx, self.cy = renderer.width / 2, renderer.height / 2
-
-    def project(self, cam: np.ndarray) -> np.ndarray:
-        return np.stack(
-            [
-                self.cx + cam[:, 0] / cam[:, 2] * self.focal,
-                self.cy - cam[:, 1] / cam[:, 2] * self.focal,
-            ],
-            axis=-1,
-        )
-
-
-def _cut(polygon: np.ndarray) -> np.ndarray:
-    """The part of a polygon (camera space) at least NEAR in front of the camera."""
-    out = []
-    count = len(polygon)
-    for i in range(count):
-        a, b = polygon[i], polygon[(i + 1) % count]
-        a_in, b_in = a[2] >= NEAR, b[2] >= NEAR
-        if a_in:
-            out.append(a)
-        if a_in != b_in:
-            t = (NEAR - a[2]) / (b[2] - a[2])
-            out.append(a + (b - a) * t)
-    return np.array(out)
 
 
 # A unit box: per face, its outward normal and four corners, in (along,
@@ -117,9 +83,9 @@ def draw_bridges(
     bridges: list[Bridge], camera: Camera, renderer: VoxelRenderer, max_distance: float
 ) -> int:
     """Draw bridges far to near; returns how many faces were filled."""
-    view = _View(camera, renderer)
+    view = View(camera, renderer)
     origin = view.origin
-    to_camera = np.array([view.right, view.up, view.forward]).T
+    to_camera = view.to_camera
     h, w = renderer.pixel_distance.shape
     jobs = []
     for bridge in bridges:
@@ -171,7 +137,7 @@ def draw_bridges(
                 x, y = sx[i, f], sy[i, f]
                 pyxel.tri(x[0], y[0], x[1], y[1], x[2], y[2], color)
                 pyxel.tri(x[0], y[0], x[2], y[2], x[3], y[3], color)
-            elif not _fill_cut(view, cam[i, f], color):
+            elif not fill_cut(view, cam[i, f], color):
                 continue
             filled += 1
         if deck:
@@ -180,19 +146,7 @@ def draw_bridges(
     return filled
 
 
-def _fill_cut(view: _View, polygon: np.ndarray, color: int) -> bool:
-    """Fill a camera-space polygon that reaches behind the camera, cut first."""
-    polygon = _cut(polygon)
-    if len(polygon) < 3:
-        return False
-    screen = view.project(polygon)
-    x0, y0 = screen[0]
-    for (x1, y1), (x2, y2) in itertools.pairwise(screen[1:]):
-        pyxel.tri(x0, y0, x1, y1, x2, y2, color)
-    return True
-
-
-def _railings(view: _View, box: np.ndarray, rise: np.ndarray, color: int) -> None:
+def _railings(view: View, box: np.ndarray, rise: np.ndarray, color: int) -> None:
     """Rails along both top edges of one deck box (its faces' corners in camera
     space), ``rise`` above it, with a post at one end of each."""
     top = box[0].tolist()  # the top face: corners (-a,-c), (a,-c), (a,c), (-a,c)
@@ -200,24 +154,5 @@ def _railings(view: _View, box: np.ndarray, rise: np.ndarray, color: int) -> Non
     for a, b in ((top[0], top[1]), (top[3], top[2])):
         ra = [a[0] + up[0], a[1] + up[1], a[2] + up[2]]
         rb = [b[0] + up[0], b[1] + up[1], b[2] + up[2]]
-        _line_cam(view, ra, rb, color)
-        _line_cam(view, a, ra, color)
-
-
-def _line_cam(view: _View, a: list[float], b: list[float], color: int) -> None:
-    """A line between two camera-space points, cut where it goes behind the camera."""
-    if a[2] < NEAR and b[2] < NEAR:
-        return
-    if a[2] < NEAR or b[2] < NEAR:
-        if a[2] < NEAR:
-            a, b = b, a
-        t = (a[2] - NEAR) / (a[2] - b[2])
-        b = [a[k] + (b[k] - a[k]) * t for k in range(3)]
-    f, cx, cy = view.focal, view.cx, view.cy
-    pyxel.line(
-        cx + a[0] / a[2] * f,
-        cy - a[1] / a[2] * f,
-        cx + b[0] / b[2] * f,
-        cy - b[1] / b[2] * f,
-        color,
-    )
+        line_cam(view, ra, rb, color)
+        line_cam(view, a, ra, color)

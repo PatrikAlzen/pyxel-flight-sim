@@ -40,7 +40,6 @@ from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
     WRECK_FULL_SIZE_DISTANCE,
     WRECK_TILT,
-    draw_aircraft,
     draw_billboards,
     draw_particles,
     full_size_distance,
@@ -57,6 +56,7 @@ from flightsim.render.hud import (
     shaded_rect,
     shadow_text,
 )
+from flightsim.render.models import LOD_PIXELS, draw_plane, draw_wreck, wreck_size
 from flightsim.render.rain import Rain
 from flightsim.render.rings import draw_ring_arrow, draw_rings
 from flightsim.render.sprites import (
@@ -82,7 +82,7 @@ from flightsim.render.worldmap import (
 from flightsim.sim.achievements import ACHIEVEMENTS, BY_KEY, Sample, Tracker
 from flightsim.sim.aircraft import Aircraft, FlightState
 from flightsim.sim.camera import Camera
-from flightsim.sim.chase import ChaseCamera, sprite_angle
+from flightsim.sim.chase import ChaseCamera
 from flightsim.sim.events import EventKind, EventLog
 from flightsim.sim.freecam import FreeCamera, FreeMode, look_at
 from flightsim.sim.particles import Particles
@@ -117,6 +117,7 @@ TITLE_MAP_STEP = 32
 PLACE_ROWS = 7  # places listed at once in the places menu; the list scrolls
 TOAST_SECONDS = 2.0
 RESULT_SECONDS = 6.0  # how long a time-trial result stays on screen
+PROPELLER_SPEED = 30.0  # radians per second at full throttle
 ACHIEVEMENT_ROWS = 9  # shown at once in the pause menu's list
 TITLE_ROWS = ("START", "AIRCRAFT", "SEED")  # top to bottom on the title screen
 REPLAY_VIEWS = ("CHASE", "COCKPIT", "TOWER", "FREE")  # C cycles through them
@@ -892,16 +893,7 @@ class App:
         plane = self.replay_plane
         cockpit = REPLAY_VIEWS[self.replay_view] == "COCKPIT"
         if plane.state is not FlightState.CRASHED and not cockpit:
-            draw_aircraft(
-                self.plane_views,
-                TRANSPARENT,
-                np.array([plane.x, plane.y, plane.altitude]),
-                plane.forward,
-                plane.up,
-                self.camera,
-                self.renderer,
-                self.plane_type.span,
-            )
+            self.draw_model(plane, self.playback.time)
         playback = self.playback
         duration = playback.recording.duration
         shaded_rect(0, H - 12, W, 12)
@@ -1407,22 +1399,22 @@ class App:
         lights = palette.LIGHTINGS[self.lighting] is not palette.DAY
         for flight in self.flights:
             plane_type = TYPES[flight.kind]
-            draw_aircraft(
+            draw_plane(
+                flight.kind,
                 self.type_views[flight.kind],
-                TRANSPARENT,
                 flight.position,
                 flight.forward,
                 flight.up,
                 self.camera,
                 self.renderer,
-                plane_type.span,
+                propeller=self.time * PROPELLER_SPEED,
             )
             if lights:
                 self.draw_nav_lights(flight, plane_type.span)
 
     def draw_nav_lights(self, flight: Flight, span: float) -> None:
         """Red on the left wing tip, green on the right, a white flash at the tail."""
-        right = np.cross(flight.forward, flight.up)
+        right = np.cross(flight.up, flight.forward)
         tips = [
             (flight.position - right * span / 2, pyxel.COLOR_RED),
             (flight.position + right * span / 2, pyxel.COLOR_LIME),
@@ -1650,10 +1642,18 @@ class App:
         if self.mode is Mode.REPLAY:
             keep = self.not_yet_crashed(nearby)
             nearby, kinds = nearby[keep], kinds[keep]
+        away = np.hypot(nearby[:, 0] - self.camera.x, nearby[:, 1] - self.camera.y)
+        big = np.array(
+            [
+                wreck_size(k, d, self.renderer) >= LOD_PIXELS
+                for k, d in zip(kinds, away)
+            ],
+            dtype=bool,
+        )
         draw_billboards(
             [views["wreck"] for views in self.type_views],
             TRANSPARENT,
-            nearby,
+            nearby[~big],
             self.camera,
             self.renderer,
             [
@@ -1661,8 +1661,10 @@ class App:
                 for t in TYPES
             ],
             WRECK_TILT,
-            variants=kinds,
+            variants=kinds[~big],
         )
+        for i in np.flatnonzero(big)[np.argsort(-away[big])]:
+            draw_wreck(int(kinds[i]), nearby[i], self.camera, self.renderer)
         if self.race:
             draw_rings(self.race, self.camera, self.renderer)
             self.draw_record_ghost()
@@ -1710,16 +1712,7 @@ class App:
             and not self.ghost
             and plane.state is not FlightState.CRASHED
         ):
-            draw_aircraft(
-                self.plane_views,
-                TRANSPARENT,
-                np.array([plane.x, plane.y, plane.altitude]),
-                plane.forward,
-                plane.up,
-                self.camera,
-                self.renderer,
-                self.plane_type.span,
-            )
+            self.draw_model(plane, self.time)
         if self.photo_frame:
             bar = H // 9
             pyxel.rect(0, 0, W, bar, pyxel.COLOR_BLACK)
@@ -1771,11 +1764,25 @@ class App:
         where = ghost_position(self.record_ghost, race.elapsed, race.ghost_interval)
         if where is None:
             return
-        sprite = self.plane_views["rear"]
-        full = full_size_distance(sprite, self.plane_type.span, self.renderer.focal)
+        ahead = ghost_position(
+            self.record_ghost, race.elapsed + 0.3, race.ghost_interval
+        )
+        forward = (ahead if ahead is not None else where) - where
+        if np.linalg.norm(forward) < 1e-6:
+            forward = np.array([0.0, -1.0, 0.0])
+        forward = forward / np.linalg.norm(forward)
+        side = np.cross(forward, [0.0, 0.0, 1.0])
+        up = np.cross(side / max(np.linalg.norm(side), 1e-9), forward)
         pyxel.dither(0.5)
-        draw_billboards(
-            sprite, TRANSPARENT, where[None, :], self.camera, self.renderer, full
+        draw_plane(
+            TYPES.index(self.plane_type),
+            self.plane_views,
+            where,
+            forward,
+            up,
+            self.camera,
+            self.renderer,
+            propeller=race.elapsed * PROPELLER_SPEED,
         )
         pyxel.dither(1.0)
 
@@ -1909,25 +1916,21 @@ class App:
         )
 
     def draw_plane(self) -> None:
-        """The aircraft sprite as seen from the chase camera."""
-        plane, cam = self.aircraft, self.camera
-        position = np.array([plane.x, plane.y, plane.altitude])
-        spot = cam.project(position, self.renderer.focal, W, H)
-        if spot is None:
-            return
-        x, y, _ = spot
-        img = self.plane_views["rear"]
-        pyxel.blt(
-            x - img.width / 2,
-            y - img.height / 2,
-            img,
-            0,
-            0,
-            img.width,
-            img.height,
-            TRANSPARENT,
-            rotate=sprite_angle(plane, cam),
-            scale=self.plane_type.span / TRAINER.span,
+        """The aircraft as seen from the chase camera."""
+        self.draw_model(self.aircraft, self.time)
+
+    def draw_model(self, plane: Aircraft, clock: float) -> None:
+        """The player's aircraft (or its replay), propeller turning with the
+        throttle at time ``clock``."""
+        draw_plane(
+            TYPES.index(self.plane_type),
+            self.plane_views,
+            np.array([plane.x, plane.y, plane.altitude]),
+            plane.forward,
+            plane.up,
+            self.camera,
+            self.renderer,
+            propeller=clock * PROPELLER_SPEED * (0.3 + plane.throttle),
         )
 
     def draw_title(self) -> None:
