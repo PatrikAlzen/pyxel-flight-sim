@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8h klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik och utmärkelser.
+> **Status:** fas 0–6, 7a–7e och 8a–8h klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8h är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik och utmärkelser. Nästa steg är 8i: flygplan som 3D-modeller.
 
 ---
 
@@ -1186,6 +1186,43 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
   - Första körningen gav också *LOW LOOP* för en loop ~270 över marken: den lägsta höjden räknades över hela fönstret, inklusive den låga stigningen efter starten, och respawnen rakt uppåt räknades inte som ett hopp. Nu räknas bara bildrutor där nosen vrids, och hopp mäts i 3D.
 - **Inte gjort:** *BEAT RECORD* ges bara när det redan fanns ett rekord för fältet och typen.
 
+#### 8i – Flygplan som 3D-modeller *(medel)*
+
+Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget, repriserna och trafiken nära, i stället för sprites som bara kan vridas i bank.
+
+- **Förstudie** (prototyp utanför projektet): ett plan av lådor med 120 trianglar (kropp, vinge med färgade vingspetsar, stjärt, fena, kabinglas och hjul) ritat med `pyxel.tri`, skuggat med palettens ramper efter en solriktning.
+  - På jaktkamerans avstånd (26 enheter) visar modellen stigning, sneda vinklar, ovansida och profil, vilket spriten inte kan.
+  - Utan svart kontur smälter ett vitt plan ihop med en ljus himmel.
+  - På trafikavstånd (100+ enheter) blir både modell och sprite några få pixlar, och där läses spritens kontur bättre.
+  - Pyxel ritar ~600 små trianglar per ms. Prototypen tog 1,8 ms per plan med en Python-loop per yta. Vektoriserat som broarna (8f, där ritningen blev fem gånger snabbare) väntas 0,3–0,5 ms.
+- **Gemensam modellritare** (ny `render/mesh.py`): klippningen mot kameran, bortsorteringen av baksidor, avståndsordningen och dimfärgerna bryts ut ur `render/bridges.py`, och broarna ritas därefter med samma kod.
+  - En modell är hörn och ytor i planets koordinater (höger, framåt, upp) med en färgramp per yta. Den placeras med planets position och framåt- och uppvektor.
+  - Alla hörn transformeras, ytornas normaler och synlighet räknas och ytorna sorteras med några få numpy-operationer per modell. Bara ytor som når bakom kameran klipps i Python.
+  - Ljuset är platt per yta: solriktningen ger nyansen i rampen och avståndet ger dimnivån, så dag, skymning, natt, mulet väder och sikt följer med av sig själva.
+  - **Kontur:** kanter mellan en synlig och en bortvänd yta ritas som mörka linjer, så att siluetten håller mot himmel och terräng som spritens svarta kant gör.
+- **Modeller per typ** (ny `render/models.py`, byggda i kod av lådor och kilar, som sprites i dag är text):
+  - `TRAINER`: dagens högvingade plan.
+  - `STUNT`: kortare och kraftigare, eventuellt dubbeldäckare.
+  - `CARGO`: längre kropp, två motorer på vingen och dubbla hjul.
+  - `SEAPLANE`: flottörer på stag i stället för hjul.
+  - Färgerna tas från typens kropps- och detaljfärg, som ramper (till exempel snöramp för vitt, takramp för rött, klippramp för grått och vattenramp för kabinglaset).
+  - Ett **vrak** per typ: kroppen bruten, ena vingen av och liggande lutad på marken i rätt riktning, i stället för en fast bild.
+- **Nivå efter storlek:** modellen används när planet blir större än ~16 pixlar på skärmen, annars dagens sprite (`draw_aircraft`). Det betyder ditt plan i jaktvy, foton och repriser, och trafik och rekordspöke på nära håll. Trafikplan långt bort ritas som i dag.
+- **Fem ställen byts:** jaktvyn (`draw_plane`), fotoläget, repriserna, trafiken och rekordspöket (halvgenomskinligt med dither). Vraken byts mot vrakmodellerna med samma nivåbyte.
+- **Möjliga tillägg** när modellerna finns:
+  - en snurrande propeller (en ditherad skiva som roterar med gasen)
+  - höjd- och skevroder som rör sig med spaken
+  - en mörk skugga på marken under planet
+  - en enkel kabinram i cockpitvyn
+
+**Tester:**
+- Orientering: att nosen projiceras åt planets framåtriktning, att vänster vingspets hamnar till vänster sett bakifrån, och att ovansidan syns uppifrån.
+- Ritning: att bortvända ytor inte ritas, att en modell som delvis är bakom kameran klipps i stället för att försvinna, och att konturen bara går längs siluetten.
+- Nivåbyte och fart: att nivån byts vid rätt storlek, och att ett plan i 3D tar under 0,5 ms och tio plan med nivåbyte under 3 ms.
+- Broar: att de ser likadana ut och är lika snabba med den gemensamma ritaren.
+
+**Risk:** utan djupbuffert ritas ytorna i avståndsordning. Där delar går in i varandra, som vingen genom kroppen, kan fel yta hamna överst i vissa vinklar. Det mildras med delar som möts men inte överlappar, och sortering per yta i stället för per del. Små trianglar på avstånd blir pixelbrus, och därför används sprites där. **Klart när:** jaktvy, foton och repriser visar typernas modeller med kontur från alla håll utan märkbara sorteringsfel, och bildrutan inte blir märkbart långsammare än i dag.
+
 ---
 
 #### Ordning och beroenden (fas 8)
@@ -1200,8 +1237,9 @@ Målet är att ge små mål som får spelaren att prova allt det andra.
 | 8f Broar | Medel | 8e, grund 3 | Något att flyga under, fler landmärken |
 | 8g Trafik | Stor | grund 3, 7b, 8d | Levande luftrum |
 | 8h Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
+| 8i Flygplan i 3D | Medel | grund 3, 8d, 8f | Riktig form från alla håll, mer liv i jaktvy, foton och repriser |
 
-8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål.
+8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora.
 
 ## Prestanda och risker
 
