@@ -48,6 +48,7 @@ class ObjectSettings:
     # Clear ground around runways, beyond the runway's own length and width.
     runway_clearance: tuple[float, float] = (40.0, 70.0)
     bridge_clearance: float = 6.0  # beyond a bridge's deck
+    pad_clearance: float = 8.0  # beyond a helicopter pad's edge
 
 
 @dataclass
@@ -165,6 +166,12 @@ def _trees(generator, sample, s: ObjectSettings, x0, y0, width, depth) -> Object
         u, v = field.local(px, py)
         keep &= ~(
             (np.abs(u) < field.length / 2 + du) & (np.abs(v) < field.width / 2 + dv)
+        )
+    # Nor on helicopter pads.
+    for pad in generator.helipads.overlapping(x0, y0, x0 + width, y0 + depth):
+        keep &= ~(
+            (np.abs(px - pad.x) < pad.half + s.pad_clearance)
+            & (np.abs(py - pad.y) < pad.half + s.pad_clearance)
         )
     # Nor where a bridge meets the banks.
     reach = generator.bridges.settings.span[1]

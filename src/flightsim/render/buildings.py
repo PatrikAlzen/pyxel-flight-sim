@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from flightsim.render.mesh import Mesh, draw_mesh, prism
+from flightsim.render.mesh import Mesh, box, draw_mesh, prism
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 from flightsim.terrain.biomes import Biome
@@ -69,4 +69,47 @@ def draw_hangar(
     filled = draw_mesh(shell, position, facing, UP, camera, renderer)
     if filled:
         filled += draw_mesh(door, position, facing, UP, camera, renderer, outline=None)
+    return filled
+
+
+PAD_SINK = 2.0  # the slab reaches this far down, for uneven ground
+PAD_MARK = 0.03  # paint stands this far proud of the slab
+
+
+def helipad_mesh(half: float) -> tuple[Mesh, Mesh]:
+    """A square pad ``half`` across each way with its top at z = 0: the slab,
+    and its paint (an H and a yellow edge), drawn over the slab."""
+    slab = box((0, 0, -PAD_SINK / 2), (half, half, PAD_SINK / 2), Biome.ROCK)
+    h = half * 0.45
+    z = PAD_MARK / 2
+    paint = [
+        box((-h * 0.6, 0, z), (h * 0.12, h * 0.75, z), Biome.SNOW),
+        box((h * 0.6, 0, z), (h * 0.12, h * 0.75, z), Biome.SNOW),
+        box((0, 0, z), (h * 0.6, h * 0.12, z), Biome.SNOW),
+    ]
+    edge = half * 0.94
+    for along in (-1, 1):
+        paint.append(
+            box((0, along * edge, z), (half * 0.94, half * 0.05, z), Biome.SAND)
+        )
+        paint.append(
+            box((along * edge, 0, z), (half * 0.05, half * 0.94, z), Biome.SAND)
+        )
+    return slab, Mesh.merge(paint)
+
+
+def draw_helipad(
+    meshes: tuple[Mesh, Mesh],
+    pad,
+    camera: Camera,
+    renderer: VoxelRenderer,
+) -> int:
+    slab, paint = meshes
+    position = np.array([pad.x, pad.y, pad.top])
+    forward = np.array([math.sin(pad.heading), -math.cos(pad.heading), 0.0])
+    filled = draw_mesh(slab, position, forward, UP, camera, renderer)
+    if filled:
+        filled += draw_mesh(
+            paint, position, forward, UP, camera, renderer, outline=None
+        )
     return filled

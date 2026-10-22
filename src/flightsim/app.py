@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum, auto
+from types import SimpleNamespace
 
 import numpy as np
 import pyxel
@@ -36,7 +37,13 @@ from flightsim.controls import Action, flight_controls, pressed
 from flightsim.persist import Place, Profile, SaveStore, WorldSave
 from flightsim.render import palette
 from flightsim.render.bridges import draw_bridges
-from flightsim.render.buildings import door_facing, draw_hangar, hangar_mesh
+from flightsim.render.buildings import (
+    door_facing,
+    draw_hangar,
+    draw_helipad,
+    hangar_mesh,
+    helipad_mesh,
+)
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
     WRECK_FULL_SIZE_DISTANCE,
@@ -75,6 +82,7 @@ from flightsim.render.sprites import (
     TRANSPARENT,
     WINDSOCK,
     WORLD_COLORS,
+    helicopter_sprites,
     house_images,
     make_image,
     plane_sprites,
@@ -93,7 +101,14 @@ from flightsim.sim.chase import ChaseCamera
 from flightsim.sim.events import EventKind, EventLog
 from flightsim.sim.freecam import FreeCamera, FreeMode, look_at
 from flightsim.sim.particles import Particles
-from flightsim.sim.planes import TRAINER, TYPES, AircraftType, by_name
+from flightsim.sim.planes import (
+    PLANES,
+    TRAINER,
+    TYPES,
+    AircraftType,
+    by_name,
+    make_vehicle,
+)
 from flightsim.sim.race import (
     Course,
     Phase,
@@ -108,6 +123,7 @@ from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import (
     Airfield,
+    landing_quality,
     landing_report,
     water_landing_report,
 )
@@ -285,12 +301,15 @@ class App:
         self.type_views = [
             {
                 view: make_image(rows)
-                for view, rows in plane_sprites(
-                    t.body, t.trim, t.settings.floats
+                for view, rows in (
+                    helicopter_sprites(t.body, t.trim)
+                    if t.helicopter
+                    else plane_sprites(t.body, t.trim, t.settings.floats)
                 ).items()
             }
             for t in TYPES
         ]
+        self.helipad_model = None  # built once the world gives the pad size
         self.hangar_model = hangar_mesh(config.HANGAR_WIDTH)
         self.prop_sprites = {
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
@@ -317,7 +336,9 @@ class App:
         self.audio = Audio()
         self.store = SaveStore(pyxel.user_data_dir(config.SAVE_VENDOR, config.TITLE))
         self.profile = self.store.load_profile()
-        self.audio.set_engine(self.plane_type.engine_note)
+        self.audio.set_engine(
+            self.plane_type.engine_note, rotor=self.plane_type.helicopter
+        )
         pyxel.run(self.update, self.draw)
 
     # --- update -----------------------------------------------------------
@@ -387,10 +408,10 @@ class App:
         self.world = make_world(self.seed)
         self.world_map = WorldMap(self.world.generator)
         sea_level = self.world.generator.settings.sea_level
-        self.aircraft = Aircraft(
-            settings=replace(self.plane_type.settings, sea_level=sea_level)
-        )
+        self.aircraft = make_vehicle(self.plane_type, sea_level)
         self.aircraft.uses_fuel = self.profile.fuel
+        pads = self.world.generator.helipads
+        self.helipad_model = helipad_mesh(pads.settings.half)
         self.camera = Camera()
         self.chase.reset()
         self.clouds = CloudLayer(self.seed)
@@ -405,7 +426,7 @@ class App:
         self.wrecks.clear()
         self.recorder.clear()
         self.tracker = Tracker(self.profile.earned, self.profile.progress, self.seed)
-        self.traffic = Traffic(self.seed, self.world.generator, len(TYPES))
+        self.traffic = Traffic(self.seed, self.world.generator, len(PLANES))
         self.flights = []
         self.near_misses.clear()
         self.closest.clear()
@@ -865,7 +886,9 @@ class App:
             case "CHASE" | "COCKPIT" if crashed:
                 look_at(cam, target)  # watch the crash from where the camera was
             case "CHASE":
-                self.replay_chase.update(plane, cam, max(dt, 1e-3), ground)
+                self.replay_chase.update(
+                    self.chase_target(plane), cam, max(dt, 1e-3), ground
+                )
             case "COCKPIT":
                 cam.x, cam.y = plane.x, plane.y
                 cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
@@ -1157,7 +1180,7 @@ class App:
         plane.update(
             flight_controls(),
             DT,
-            self.world.height_at,
+            self.flight_ground(),
             self.wind,
             bump,
             runway=self.on_runway,
@@ -1247,25 +1270,52 @@ class App:
     def choose_aircraft(self, plane_type: AircraftType) -> None:
         """Fly ``plane_type`` from now on (also in later sessions)."""
         self.profile.aircraft = plane_type.name
-        self.audio.set_engine(plane_type.engine_note)
+        self.audio.set_engine(plane_type.engine_note, rotor=plane_type.helicopter)
         self.save_profile()
 
     def change_aircraft(self) -> None:
-        """Pause menu: swap to the next type, only standing still on a runway."""
+        """Pause menu: swap to the next type, only standing still on a runway
+        or a helicopter pad."""
         plane = self.aircraft
-        on_runway = self.on_runway(plane.x, plane.y)
-        if plane.state is not FlightState.LANDED or plane.speed > 1.0 or not on_runway:
-            self.show_toast("STOP ON A RUNWAY TO CHANGE AIRCRAFT")
+        stopped = plane.state is FlightState.LANDED and plane.speed <= 1.0
+        if not stopped or not self.at_station(plane.x, plane.y):
+            self.show_toast("STOP ON A RUNWAY OR PAD TO CHANGE")
             return
         new = TYPES[(TYPES.index(self.plane_type) + 1) % len(TYPES)]
         self.choose_aircraft(new)
-        plane.settings = replace(new.settings, sea_level=plane.settings.sea_level)
-        plane.fuel = 1.0
+        swapped = make_vehicle(new, plane.settings.sea_level)
+        swapped.uses_fuel = plane.uses_fuel
+        swapped.park(plane.x, plane.y, plane.heading, self.flight_ground())
+        self.aircraft = swapped
         self.end_race("TIME TRIAL ENDED")
         self.show_toast(f"{new.name}: {new.description}", 3.0)
 
     def on_runway(self, x: float, y: float) -> bool:
         return self.world.generator.airfields.runway_at(x, y) is not None
+
+    def at_station(self, x: float, y: float) -> bool:
+        """On a runway or a helicopter pad: where you can refuel and change."""
+        return (
+            self.on_runway(x, y) or self.world.generator.helipads.at(x, y) is not None
+        )
+
+    def flight_ground(self) -> Callable[[float, float], float]:
+        """The ground the aircraft meets: the terrain, and the tops of the
+        helicopter pads near it."""
+        plane = self.aircraft
+        pads = self.world.generator.helipads.near(plane.x, plane.y, config.PAD_SEARCH)
+        height_at = self.world.height_at
+        if not pads:
+            return height_at
+
+        def ground(x: float, y: float) -> float:
+            height = height_at(x, y)
+            for pad in pads:
+                if pad.contains(x, y):
+                    height = max(height, pad.top)
+            return height
+
+        return ground
 
     # --- achievements -------------------------------------------------------
 
@@ -1289,6 +1339,10 @@ class App:
             in_cloud=self.clouds.inside(plane.x, plane.y, plane.altitude),
             storm=self.weather.current.name == "STORM",
             over_river=self.over_river,
+            helicopter=self.plane_type.helicopter,
+            along=float(
+                getattr(plane, "velocity", plane.forward * plane.speed) @ plane.forward
+            ),
         )
         self.award(self.tracker.update(sample, DT))
         if self.tracker.dirty and pyxel.frame_count % config.PROGRESS_SAVE_FRAMES == 0:
@@ -1456,14 +1510,14 @@ class App:
         self.save_profile()
 
     def refuel(self) -> None:
-        """Fill the tank while standing still on a runway."""
+        """Fill the tank while standing still on a runway or a helicopter pad."""
         plane = self.aircraft
         standing = (
             plane.uses_fuel
             and plane.state is FlightState.LANDED
             and plane.speed < config.REFUEL_MAX_SPEED
             and plane.fuel < 1.0
-            and self.world.generator.airfields.runway_at(plane.x, plane.y) is not None
+            and self.at_station(plane.x, plane.y)
         )
         if not standing:
             self.refuelling = False
@@ -1481,6 +1535,10 @@ class App:
         """Grade a landing if it was on a runway, and remember the airfield."""
         plane = self.aircraft
         field = self.world.generator.airfields.runway_at(plane.x, plane.y)
+        pad = self.world.generator.helipads.at(plane.x, plane.y)
+        if field is None and (pad is not None or self.plane_type.helicopter):
+            self.landed_off_field(pad)
+            return
         if field is None:
             if plane.on_water:
                 report = water_landing_report(
@@ -1504,6 +1562,22 @@ class App:
         crosswind = abs(self.wind[0] * ax + self.wind[1] * ay)
         self.award(self.tracker.landed_at(field.number, crosswind))
 
+    def landed_off_field(self, pad) -> None:
+        """A touchdown away from runways: on a pad, or (a helicopter) anywhere."""
+        plane = self.aircraft
+        quality = landing_quality(plane.touchdown_sink, plane.touchdown_engine_out)
+        where = pad.name if pad is not None else "TOUCHDOWN"
+        report = f"{where}: {quality} ({plane.touchdown_sink:.1f} SINK)"
+        self.show_toast(report)
+        self.events.emit(EventKind.LANDING, (plane.x, plane.y, plane.altitude), report)
+        ground = self.world.height_at(plane.x, plane.y)
+        height = ground - self.world.generator.settings.sea_level
+        self.award(
+            self.tracker.landed_off_field(
+                height, None if pad is None else pad.number, self.plane_type.helicopter
+            )
+        )
+
     def crashed(self) -> None:
         """The moment of impact: leave a wreck on the ground and blow up."""
         plane = self.aircraft
@@ -1523,11 +1597,29 @@ class App:
             self.watch_crash_site()
             return
         if self.chase_view:
-            self.chase.update(plane, cam, DT, self.world.height_at)
+            self.chase.update(self.chase_target(plane), cam, DT, self.world.height_at)
             return
         cam.x, cam.y = plane.x, plane.y
         cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
         cam.set_vectors(plane.forward, plane.up)
+
+    def chase_target(self, plane: Aircraft):
+        """What the chase camera follows: the aircraft itself, or for a
+        helicopter a level version of it, so the view does not tip forward
+        when it leans into its speed."""
+        if not self.plane_type.helicopter:
+            return plane
+        flat = np.array([plane.forward[0], plane.forward[1], 0.0])
+        if np.linalg.norm(flat) < 1e-6:
+            flat = np.array([math.sin(plane.heading), -math.cos(plane.heading), 0.0])
+        flat /= np.linalg.norm(flat)
+        return SimpleNamespace(
+            x=plane.x,
+            y=plane.y,
+            altitude=plane.altitude,
+            forward=flat,
+            up=np.array([0.0, 0.0, 1.0]),
+        )
 
     def watch_crash_site(self) -> None:
         """Circle slowly round the wreck from above, outside any hillside."""
@@ -1601,6 +1693,7 @@ class App:
                     plane.range_estimate() if plane.uses_fuel else None,
                     self.map_bridges(),
                     set(self.saved.bridges),
+                    self.map_helipads(),
                 )
             case Mode.PHOTO:
                 self.draw_photo()
@@ -1635,6 +1728,7 @@ class App:
         )
         self.render_time.add(time.perf_counter() - start)
         draw_particles(self.particles, self.camera, self.renderer)
+        self.draw_helipads()
         hangars = self.draw_airfield_props()
         bridges = self.bridges_near(
             self.camera.x, self.camera.y, config.BRIDGE_DRAW_DISTANCE
@@ -1865,6 +1959,17 @@ class App:
             pyxel.circ(x, y, 1, pyxel.COLOR_YELLOW)
             pyxel.pset(x, y, pyxel.COLOR_WHITE)
 
+    def draw_helipads(self) -> None:
+        """Helicopter pads near the camera, far ones first; they lie flat on
+        the ground, so everything else is drawn over them."""
+        cam = self.camera
+        pads = self.world.generator.helipads.near(
+            cam.x, cam.y, config.PAD_DRAW_DISTANCE
+        )
+        pads.sort(key=lambda p: -math.hypot(p.x - cam.x, p.y - cam.y))
+        for pad in pads:
+            draw_helipad(self.helipad_model, pad, cam, self.renderer)
+
     def draw_airfield_props(self) -> list[tuple[float, np.ndarray, np.ndarray]]:
         """Hangars and windsocks at the airfields around the camera, as pictures.
         Hangars close enough to look flat are left out and returned instead, as
@@ -1944,6 +2049,17 @@ class App:
         rx, ry = W / 2 * step, H / 2 * step
         box = (plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry)
         return s.villages(*box), s.lighthouses(*box)
+
+    def map_helipads(self) -> list:
+        """Helicopter pads on the map, at the same zoom levels as villages."""
+        step = ZOOMS[self.map_zoom]
+        if step > config.MAP_SETTLEMENT_ZOOM:
+            return []
+        plane = self.aircraft
+        rx, ry = W / 2 * step, H / 2 * step
+        return self.world.generator.helipads.overlapping(
+            plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
+        )
 
     def map_bridges(self) -> list[Bridge]:
         """Bridges on the map, at the same zoom levels as villages."""

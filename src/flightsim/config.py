@@ -82,5 +82,9 @@ RIVER_CHECK_FRAMES = 10  # how often the river under the plane is looked up
 RIVER_VALLEY = 0.5  # valley depth (0..1) that counts as over a river
 PROGRESS_SAVE_FRAMES = 600  # progress (distances, counts) is saved this often
 
+# Helicopter pads.
+PAD_SEARCH = 60.0  # pads this close to the aircraft are solid ground
+PAD_DRAW_DISTANCE = 700.0
+
 # Fuel.
 REFUEL_MAX_SPEED = 1.0  # the plane must stand (nearly) still to refuel

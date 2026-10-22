@@ -12,6 +12,7 @@ switches to the sprite below ``LOD_PIXELS``.
 """
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import pyxel
@@ -21,7 +22,16 @@ from flightsim.render.mesh import Mesh, box, draw_mesh
 from flightsim.render.sprites import TRANSPARENT
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
-from flightsim.sim.planes import CARGO, SEAPLANE, STUNT, TRAINER, TYPES, AircraftType
+from flightsim.sim.planes import (
+    CARGO,
+    SCOUT,
+    SEAPLANE,
+    STUNT,
+    TANDEM,
+    TRAINER,
+    TYPES,
+    AircraftType,
+)
 from flightsim.terrain.biomes import Biome
 
 LOD_PIXELS = 16.0  # narrower than this on screen: the sprite instead
@@ -38,6 +48,21 @@ RAMPS = {
 }
 GLASS = Biome.DEEP_WATER
 DARK = Biome.RUNWAY  # tyres, cowlings, propellers
+
+
+@dataclass(frozen=True)
+class Rotor:
+    """A propeller or rotor: hub position, blade length, the axis it turns
+    about (y: a propeller, z: a main rotor, x: a tail rotor), how many blades
+    and how fast it turns compared with the others."""
+
+    x: float
+    y: float
+    z: float
+    radius: float
+    axis: str = "y"
+    blades: int = 2
+    rate: float = 1.0
 
 
 def _wheels(span: float, track: float, y: float) -> list[Mesh]:
@@ -70,8 +95,7 @@ def _trainer(body: Biome, trim: Biome, floats: bool = False) -> tuple[Mesh, list
     else:
         parts += _wheels(5.5, 1.5, 1.0)
         parts.append(box((0, -2.2, -0.5), (0.05, 0.1, 0.12), DARK))  # tail wheel
-    props = [(0.0, 3.05, 0.0, 0.9)]  # (x, y, z, blade half-length)
-    return Mesh.merge(parts), props
+    return Mesh.merge(parts), [Rotor(0.0, 3.05, 0.0, 0.9)]
 
 
 def _stunt(body: Biome, trim: Biome) -> tuple[Mesh, list]:
@@ -89,7 +113,7 @@ def _stunt(body: Biome, trim: Biome) -> tuple[Mesh, list]:
     for side in (-1, 1):  # struts between the wings
         parts.append(box((side * 1.6, 0.7, 0.22), (0.05, 0.05, 0.55), DARK))
     parts += _wheels(4.5, 1.3, 0.8)
-    return Mesh.merge(parts), [(0.0, 2.35, 0.0, 0.8)]
+    return Mesh.merge(parts), [Rotor(0.0, 2.35, 0.0, 0.8)]
 
 
 def _cargo(body: Biome, trim: Biome) -> tuple[Mesh, list]:
@@ -105,14 +129,67 @@ def _cargo(body: Biome, trim: Biome) -> tuple[Mesh, list]:
     props = []
     for side in (-1, 1):  # two engines on the wing
         parts.append(box((side * 1.9, 1.2, 0.5), (0.35, 0.9, 0.32), trim, front=0.7))
-        props.append((side * 1.9, 2.15, 0.5, 1.0))
+        props.append(Rotor(side * 1.9, 2.15, 0.5, 1.0))
     parts += _wheels(8.5, 2.2, 0.4)
     parts += _wheels(8.5, 2.2, 1.0)
     return Mesh.merge(parts), props
 
 
+def _skids(half_track: float, length: float, y: float) -> list[Mesh]:
+    """Two skids on struts under a helicopter, reaching down to the gear height."""
+    parts = []
+    for side in (-1, 1):
+        parts.append(box((side * half_track, y, -1.42), (0.07, length, 0.07), DARK))
+        for strut in (y + length * 0.45, y - length * 0.45):
+            parts.append(
+                box((side * half_track * 0.8, strut, -0.95), (0.05, 0.05, 0.45), DARK)
+            )
+    return parts
+
+
+def _helicopter(
+    plane_type: AircraftType, body: Biome, trim: Biome
+) -> tuple[Mesh, list]:
+    """A cabin with glass in front, a tail boom with fin and tail rotor, skids,
+    and the main rotor on a mast; the tandem has two rotors and no tail one."""
+    radius = plane_type.settings.rotor_radius
+    if plane_type is TANDEM:
+        parts = [
+            box((0, 0, 0), (0.9, 4.0, 0.9), body, front=0.85),
+            box((0, 4.05, 0.25), (0.6, 0.25, 0.45), GLASS, front=0.7),
+            box((0, -3.4, 1.15), (0.45, 0.8, 0.45), trim),  # rear rotor pylon
+            box((0, 3.0, 1.0), (0.3, 0.3, 0.2), trim),
+        ]
+        for y in (2.2, -2.2):  # wheels under the long fuselage
+            for side in (-1, 1):
+                parts.append(box((side * 0.8, y, -1.25), (0.14, 0.24, 0.24), DARK))
+        rotors = [
+            Rotor(0.0, 3.0, 1.3, radius, "z", 3, 1.0),
+            Rotor(0.0, -3.4, 1.75, radius, "z", 3, -1.0),  # turning the other way
+        ]
+        return Mesh.merge(parts), rotors
+    small = plane_type is SCOUT
+    k = 0.8 if small else 1.0  # the scout is a smaller helicopter all round
+    parts = [
+        box((0, 0.5 * k, 0), (0.75 * k, 1.5 * k, 0.75), body, front=0.75),
+        box((0, 1.95 * k, 0.2), (0.6 * k, 0.4 * k, 0.45), GLASS, front=0.75),
+        box((0, 0.0, 0.95), (0.45 * k, 0.9 * k, 0.25), trim),  # engine
+        box((0, -2.6 * k, 0.3), (0.12, 1.8 * k, 0.12), body, front=2.0),  # boom
+        box((0, -4.35 * k, 0.8), (0.06, 0.3, 0.6), trim),  # fin
+        box((0, 0.3 * k, 1.3), (0.08, 0.08, 0.22), DARK),  # mast
+    ]
+    parts += _skids(0.75 * k, 1.5 * k, 0.4 * k)
+    rotors = [
+        Rotor(0.0, 0.3 * k, 1.55, radius, "z", 2 if small else 4, 1.0),
+        Rotor(0.2, -4.35 * k, 0.8, 0.75 * k, "x", 2, 3.0),  # tail rotor
+    ]
+    return Mesh.merge(parts), rotors
+
+
 def _build(plane_type: AircraftType) -> tuple[Mesh, list]:
     body, trim = RAMPS[plane_type.body], RAMPS[plane_type.trim]
+    if plane_type.helicopter:
+        return _helicopter(plane_type, body, trim)
     if plane_type is STUNT:
         return _stunt(body, trim)
     if plane_type is CARGO:
@@ -124,24 +201,37 @@ MODELS = [_build(t) for t in TYPES]  # (body, propellers) per type
 assert TYPES[0] is TRAINER
 
 
-def _propeller(x: float, y: float, z: float, half: float, angle: float) -> Mesh:
-    blade = box((0, 0, 0), (half, 0.04, 0.1), DARK).turned("y", angle)
-    return Mesh(
-        blade.vertices + (x, y, z),
-        blade.faces,
-        blade.ramps,
-        blade.edges,
-        blade.edge_faces,
-    )
+def _blades(rotor: Rotor, angle: float) -> list[Mesh]:
+    """The rotor's blades, each reaching out from the hub, turned ``angle``."""
+    r = rotor.radius
+    blade = {
+        "y": box((r / 2, 0, 0), (r / 2, 0.04, 0.1), DARK),  # a propeller
+        "z": box((r / 2, 0, 0), (r / 2, 0.22, 0.04), DARK),  # a main rotor
+        "x": box((0, r / 2, 0), (0.04, r / 2, 0.1), DARK),  # a tail rotor
+    }[rotor.axis]
+    out = []
+    for k in range(rotor.blades):
+        turned = blade.turned(
+            rotor.axis, angle * rotor.rate + k * math.tau / rotor.blades
+        )
+        out.append(
+            Mesh(
+                turned.vertices + (rotor.x, rotor.y, rotor.z),
+                turned.faces,
+                turned.ramps,
+                turned.edges,
+                turned.edge_faces,
+            )
+        )
+    return out
 
 
 def plane_mesh(kind: int, propeller: float = 0.0) -> Mesh:
-    """The model of aircraft type ``kind`` with its propellers at angle ``propeller``."""
-    body, props = MODELS[kind]
-    if not props:
-        return body
-    blades = [_propeller(x, y, z, half, propeller) for x, y, z, half in props]
-    return Mesh.merge([body, *blades])
+    """The model of aircraft type ``kind`` with its propellers or rotors at
+    angle ``propeller``."""
+    body, rotors = MODELS[kind]
+    blades = [blade for rotor in rotors for blade in _blades(rotor, propeller)]
+    return Mesh.merge([body, *blades]) if blades else body
 
 
 def wreck_mesh(kind: int) -> Mesh:

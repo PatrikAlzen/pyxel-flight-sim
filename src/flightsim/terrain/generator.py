@@ -15,6 +15,7 @@ from flightsim.terrain import shading
 from flightsim.terrain.airfields import Airfield, Airfields, AirfieldSettings
 from flightsim.terrain.biomes import Biome, classify
 from flightsim.terrain.bridges import Bridges
+from flightsim.terrain.helipads import Helipads
 from flightsim.terrain.noise import FractalNoise, domain_warp, smoothstep
 from flightsim.terrain.settlements import Settlements
 
@@ -112,6 +113,7 @@ class TerrainGenerator:
             seed, self.elevation, self.moisture, self.settings.sea_level, self.airfields
         )
         self.bridges = Bridges(seed, self)
+        self.helipads = Helipads(seed, self)
 
     def elevation(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Terrain height at world coordinates, including the sea floor and

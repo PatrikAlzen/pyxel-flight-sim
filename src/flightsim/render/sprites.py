@@ -139,6 +139,98 @@ WINDSOCK = [
 ]
 
 
+def _rows(rows: list[str], width: int = 25) -> list[str]:
+    """Sprite rows padded with transparency to ``width``, centred."""
+    return [row.center(width, ".") for row in rows]
+
+
+# A helicopter, the same five views as the plane: rotor blades as a dark line.
+HELI_REAR = _rows([
+    "kkkkkkkkkkkkkkkkkkkkkkkkk",
+    "k",
+    "kkkkk",
+    "kwwwwwk",
+    "kwwwwwwwk",
+    "kwwgggwwk",
+    "kwwwwwk",
+    "kkkkk",
+    "k",
+    "k.....k.....k",
+    "kkkkkkkkkkkkkkk",
+])  # fmt: skip
+HELI_FRONT = _rows([
+    "kkkkkkkkkkkkkkkkkkkkkkkkk",
+    "k",
+    "kkkkk",
+    "kwnnnwk",
+    "kwnnnnnwk",
+    "kwwwwwwwk",
+    "kwwwwwk",
+    "kkkkk",
+    "k.....k.....k",
+    "kkkkkkkkkkkkkkk",
+])  # fmt: skip
+HELI_SIDE = [
+    row.ljust(25, ".")
+    for row in [
+        "..kkkkkkkkkkkkkkkkkkkkkkk",
+        "...............k",
+        "k............kkwwk",
+        "kwk.......kkkwwwnnk",
+        "kwwkkkkkkkwwwwwwnnnk",
+        "kgwwwwwwwwwwwwwwwnnnk",
+        ".kk.....kgwwwwwwwwwwk",
+        ".........kkkkkkkkkkk",
+        "..........k......k",
+        ".........kkkkkkkkkkkk",
+    ]
+]  # fmt: skip
+HELI_TOP = _rows([
+    "k",
+    "k",
+    "kkkkk",
+    "kwwnwwk",
+    "kkkkkkkkkkwwwwwkkkkkkkkkk",
+    "kwwwwwk",
+    "kwwwk",
+    "k",
+    "kwk",
+    "kwk",
+    "kwk",
+    "kkgkk",
+    "kkk",
+])  # fmt: skip
+HELI_WRECK = [
+    row.ljust(25, ".")
+    for row in [
+        "..........k",
+        ".........k",
+        "........kkwwwk",
+        "...kkkkkwwwwnnk",
+        "kkkwwwwwwwwwwnnk",
+        ".kk..kgwwwwwwwwk",
+        "......kkkkkkkkk.....k",
+        "....kkkkkkkk..k.k",
+    ]
+]  # fmt: skip
+
+
+def helicopter_sprites(body: str = "w", trim: str = "g"):
+    """A helicopter's views (rear, front, side, top and wreck) in ``body`` and
+    ``trim`` colours in place of white and grey."""
+    views = {
+        "rear": HELI_REAR,
+        "front": HELI_FRONT,
+        "side": HELI_SIDE,
+        "top": HELI_TOP,
+        "wreck": HELI_WRECK,
+    }
+    colours = str.maketrans({"w": body, "g": trim})
+    return {
+        view: [row.translate(colours) for row in rows] for view, rows in views.items()
+    }
+
+
 # Floats replacing the wheels, row by row, for a seaplane's views.
 _FLOATS = {
     "rear": {

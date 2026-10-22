@@ -38,7 +38,11 @@ def test_every_model_has_its_size_and_sits_on_its_wheels(kind):
     body, props = MODELS[kind]
     v = body.vertices
     span = TYPES[kind].span
-    assert np.ptp(v[:, 0]) == pytest.approx(span, rel=0.1)
+    if TYPES[kind].helicopter:  # the rotors set its size
+        whole = plane_mesh(kind).vertices
+        assert np.ptp(whole[:, :2], axis=0).max() == pytest.approx(span, rel=0.1)
+    else:
+        assert np.ptp(v[:, 0]) == pytest.approx(span, rel=0.1)
     assert v[:, 2].min() == pytest.approx(-1.5, abs=0.06)  # gear height
     assert v[:, 1].max() > 1.5 and v[:, 1].min() < -1.5  # nose ahead, tail behind
     assert props  # every type has at least one propeller
@@ -111,6 +115,8 @@ def test_close_planes_are_models_far_ones_sprites():
 
 def test_wrecks_have_lost_the_right_wing():
     for kind, wreck in enumerate(WRECKS):
+        if TYPES[kind].helicopter:
+            continue  # no wings; its rotor is gone instead (not part of the body)
         span = TYPES[kind].span
         assert wreck.vertices[:, 0].max() < span * 0.3
         assert wreck.vertices[:, 0].min() < -span * 0.4
@@ -179,7 +185,7 @@ def test_title_screen_model_fits_its_frame_at_every_angle(kind):
         # A pixel of outline goes round it, so one more pixel must be free.
         assert xs.min() >= 1 and xs.max() <= 53, (degrees, xs.min(), xs.max())
         assert ys.min() >= 1 and ys.max() <= 47, (degrees, ys.min(), ys.max())
-        assert xs.max() - xs.min() > 20  # and it is not tiny
+        assert xs.max() - xs.min() > 15  # and it is not tiny (end-on, narrow)
 
 
 def test_title_screen_model_draws_only_inside_its_frame(screen):

@@ -72,6 +72,12 @@ ACHIEVEMENTS = [
     Achievement("BRIDGES_5", "BRIDGE TROLL", "Fly under 5 different bridges"),
     Achievement("NEAR_MISS", "TOO CLOSE", "Pass within 30 of another aircraft"),
     Achievement("PHOTOGRAPHER", "PHOTOGRAPHER", "Take 10 photos"),
+    # Helicopters.
+    Achievement("HOVER", "STEADY HANDS", "Hover a helicopter for 30 s below 10"),
+    Achievement("BACKWARDS", "REVERSE GEAR", "Fly a helicopter backwards for 5 s"),
+    Achievement("MOUNTAIN_TOP", "SUMMIT", "Land a helicopter over 200 above the sea"),
+    Achievement("HELIPAD", "ON THE SPOT", "Land on a helicopter pad"),
+    Achievement("HELIPADS_5", "PAD HOPPER", "Land on 5 different helicopter pads"),
     Achievement("HARD_LESSONS", "HARD LESSONS", "Fly into a lighthouse", hidden=True),
 ]
 BY_KEY = {a.key: a for a in ACHIEVEMENTS}
@@ -98,6 +104,12 @@ class AchievementSettings:
     crosswind: float = 12.0
     trial_fast: float = 60.0
     jump: float = 50.0  # moved further in a frame: respawned, not flown
+    hover_speed: float = 3.0
+    hover_height: float = 10.0
+    hover_time: float = 30.0
+    backwards_speed: float = 10.0
+    backwards_time: float = 5.0
+    summit: float = 200.0  # above sea level
 
 
 @dataclass
@@ -113,6 +125,8 @@ class Sample:
     in_cloud: bool = False
     storm: bool = False
     over_river: bool = False
+    helicopter: bool = False
+    along: float = 0.0  # speed along the nose; negative going backwards
 
 
 def _turned(a: np.ndarray, b: np.ndarray, axis: np.ndarray) -> float:
@@ -167,7 +181,7 @@ class Tracker:
         self.loop = _Window(self.settings.loop_window)
         self.roll = _Window(self.settings.roll_window)
         self.inverted = self.low_pass = self.cloud = self.storm = 0.0
-        self.river = 0.0
+        self.river = self.hover = self.backwards = 0.0
 
     # --- earning ---------------------------------------------------------
 
@@ -207,7 +221,7 @@ class Tracker:
             self.loop.clear()
             self.roll.clear()
             self.inverted = self.low_pass = self.cloud = self.storm = 0.0
-            self.river = 0.0
+            self.river = self.hover = self.backwards = 0.0
             return new
 
         # Loop: the nose turns a full circle about the wings while they stay
@@ -247,6 +261,16 @@ class Tracker:
         if self.storm >= s.storm_time:
             new += self._earn("STORM_CHASER")
 
+        if sample.helicopter:
+            still = sample.speed < s.hover_speed and sample.agl < s.hover_height
+            self.hover = self.hover + dt if still else 0.0
+            if self.hover >= s.hover_time:
+                new += self._earn("HOVER")
+            back = sample.along < -s.backwards_speed
+            self.backwards = self.backwards + dt if back else 0.0
+            if self.backwards >= s.backwards_time:
+                new += self._earn("BACKWARDS")
+
         moved = float(np.hypot(*(sample.position[:2] - last.position[:2])))
         on_river = sample.over_river and sample.agl < s.river_height
         self.river = self.river + moved if on_river else 0.0
@@ -285,6 +309,20 @@ class Tracker:
                 new += self._earn(key)
         if crosswind > self.settings.crosswind:
             new += self._earn("CROSSWIND")
+        return new
+
+    def landed_off_field(
+        self, height: float, pad: int | None, helicopter: bool = True
+    ) -> list[str]:
+        """A touchdown away from runways, ``height`` above the sea, on helicopter
+        pad number ``pad`` if it was one."""
+        new = []
+        if helicopter and height > self.settings.summit:
+            new += self._earn("MOUNTAIN_TOP")
+        if pad is not None:
+            new += self._earn("HELIPAD")
+            if self._collect("helipads", f"{self.seed}:{pad}") >= 5:
+                new += self._earn("HELIPADS_5")
         return new
 
     def discovered_lighthouse(self, number: int) -> list[str]:

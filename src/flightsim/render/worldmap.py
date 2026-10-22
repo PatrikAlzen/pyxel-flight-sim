@@ -133,6 +133,7 @@ def draw_map_overlay(
     fuel_range: float | None = None,
     bridges: Sequence[Bridge] = (),
     flown_under: set[int] = frozenset(),
+    helipads: Sequence = (),
 ) -> None:
     """The in-flight map: terrain, crash sites, saved places, the plane, a scale
     bar and help. With ``fuel_range``, a circle shows how far the fuel reaches
@@ -155,6 +156,10 @@ def draw_map_overlay(
             shadow_text(lx + 4, ly - 3, light.name, pyxel.COLOR_YELLOW)
     for bridge in bridges:
         draw_bridge_marker(world_map, bridge, bridge.number in flown_under)
+    for pad in helipads:  # a small H in a box
+        hx, hy = world_map.to_screen(pad.x, pad.y)
+        pyxel.rect(hx - 3, hy - 3, 7, 7, pyxel.COLOR_BLACK)
+        pyxel.text(hx - 1, hy - 2, "H", pyxel.COLOR_YELLOW)
     for field in airfields:
         reachable = fuel_range is None or math.hypot(field.x - x, field.y - y) <= (
             fuel_range

@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8i klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8i är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser och flygplan som 3D-modeller. Nästa steg är 8j: helikoptrar.
+> **Status:** fas 0–6, 7a–7e och 8a–8j klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller och helikoptrar med helikopterplattor.
 
 ---
 
@@ -218,6 +218,7 @@ Alla konstanter samlas i `AircraftSettings` (i `sim/aircraft.py`) så att flygk�
 | `Esc` / `Q` på startskärmen | – | Avsluta |
 | `C` | `Y` | Cockpit / jaktkamera |
 | `T` | Höger spak (klick) | Tid på dygnet: dag → skymning → natt |
+| Helikopter | – | `↑`/`↓`/`←`/`→` lutar (släpp: den rätar upp sig och stannar), `W`/`S` stiger och sjunker (släpp: svävar på höjden, nära marken sätter den sig mjukt), `A`/`D` vrider. Landar var som helst som är plant nog, tankar på flygfält och helikopterplattor |
 | `F3` | – | Repris av den senaste minuten (även i pausmenyn och kraschvyn): `←`/`→` spolar 5 s, `Space` pausar, `↑`/`↓` byter fart (½×, 1×, 2×), `C` byter kamera (jakt, cockpit, torn, fri), `H` döljer hjälptexten |
 | `F2` | – | Fotoläge (även i pausmenyn). Hjälptexten i bild visar tangenterna: `Tab` kretsa/flyg, `Z`/`X` zoom, `V` väder, `F` ram, `O` planet, `Enter` spara bild, `H` hjälptext |
 
@@ -244,6 +245,7 @@ pyxel-flight-sim/
 │       │   ├── airfields.py   # flygfält: placering, utjämnad mark, banmålning, landningsbetyg
 │       │   ├── settlements.py # byar och fyrar: placering per cell, namn
 │       │   ├── bridges.py     # broar över floderna: placering, kollision, passage under
+│       │   ├── helipads.py    # helikopterplattor vid byar och fyrar
 │       │   ├── objects.py     # träd, hus och fyrar per tile, hashning, kollision
 │       │   ├── world.py       # LOD-nivåer som ringbuffertar som följer kameran, arbetsprocesser
 │       │   └── shading.py     # lutningsbaserad ljussättning
@@ -259,7 +261,7 @@ pyxel-flight-sim/
 │       │   ├── bridges.py     # broar i 3D: lådor klippta mot kameran, dimma, räcken
 │       │   ├── mesh.py        # 3D-modeller: placering, skuggning, kontur, klippning
 │       │   ├── models.py      # flygplanens och vrakens modeller, modell eller sprite
-│       │   ├── buildings.py   # hangarer som 3D-modeller med port mot banan
+│       │   ├── buildings.py   # hangarer och helikopterplattor som 3D-modeller
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
@@ -267,7 +269,8 @@ pyxel-flight-sim/
 │       │   ├── freecam.py     # fri kamera för fotoläget: kretsa runt planet eller flyg
 │       │   ├── events.py      # händelselogg: krasch, landning, ring
 │       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
-│       │   ├── planes.py      # flygplanstyper: TRAINER, STUNT, CARGO, SEAPLANE
+│       │   ├── planes.py      # typer: TRAINER, STUNT, CARGO, SEAPLANE, SCOUT, UTILITY, TANDEM
+│       │   ├── helicopter.py  # helikopterns flygmodell med styrhjälp, medar, rotorträff
 │       │   ├── traffic.py     # trafik mellan flygfälten: rutter, tidtabell, kollision
 │       │   ├── achievements.py # utmärkelser: lista, detektorer, räknare i profilen
 │       │   ├── weather.py     # väder: förinställningar, övergångar, vind, byar, turbulens
@@ -294,6 +297,7 @@ pyxel-flight-sim/
     ├── test_traffic.py        # rutter bana till bana, frigång, lutning, tidtabell, kollision
     ├── test_achievements.py   # detektorer med syntetiska flygbanor, händelser, räknare
     ├── test_models.py         # orientering, synliga ytor, kontur, klippning, nivåbyte, vrak
+    ├── test_helicopter.py     # svävning, fart, landning, krascher, vind, bränsle, plattor
     └── conftest.py            # gemensamt headless Pyxel-fönster för tester som ritar
 ```
 
@@ -1270,7 +1274,7 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
   - 2 nya tester (totalt 295): att prismats ytor pekar utåt, och att porten vetter mot banan och bara syns framifrån.
   - Provkört i fönstret från fem håll: framifrån, snett från sidan, bakifrån, ovanifrån och nära marken. Vindstruten är fortfarande en bild.
 
-#### 8j – Helikopterläge *(stor)*
+#### 8j – Helikopterläge ✅
 
 Målet är ett annat sätt att flyga: att kunna sväva, flyga sakta längs en flod, backa och landa på en bergstopp eller en äng, med några helikoptertyper att välja mellan.
 
@@ -1322,6 +1326,52 @@ Målet är ett annat sätt att flyga: att kunna sväva, flyga sakta längs en fl
 - Om trafiken också ska få helikoptrar.
 
 **Risk:** känslan. Det är lätt att göra helikoptern antingen omöjlig att styra eller tråkig, och hjälpen behöver provas fram i riktigt fönster. Tidsloppens banor passar sämre, vilket mildras med egna rekord per typ. **Klart när:** man kan välja en helikopter, lyfta, sväva, flyga, landa på en äng och tanka på ett flygfält, och alla tre typerna känns olika.
+
+**Resultat** (förenklad styrning och helikopterplattor, helikoptertrafik sparad till senare):
+- **Flygmodell** ([sim/helicopter.py](src/flightsim/sim/helicopter.py)): `Helicopter` ärver `Aircraft`, så bränsle, larm, krasch och tillstånd är desamma, men ersätter flygningen.
+  - Hastigheten är en vektor. Rotorn lyfter längs uppvektorn med `kollektiv × max_lift × lufttäthet`, och tyngd, kvadratiskt luftmotstånd och vind verkar på den. Svävning blir en jämvikt vid kollektiv ~0,54.
+  - **Styrhjälp:**
+    - Spaken ställer en lutning (±25° för `UTILITY`, bakåt 60 % av det) som helikoptern glider mot, och den rätar upp sig när spaken släpps.
+    - `W`/`S` begär en stig- eller sjunkhastighet som kollektiven ställs efter, så att den svävar på höjden när tangenterna släpps.
+    - Nära marken begränsas sjunkhastigheten till `1,5 + 0,35 × höjd`, så att den som håller `S` sätter sig mjukt (1,9 i sjunkhastighet i ett test från 60 enheter).
+    - Driften åt sidan tas bort, och med spaken i mitten bromsas farten mot marken, så att helikoptern håller sin plats även i vind (7,8 enheter på 20 s i en vind på 12).
+    - Bank i framfart vrider kursen lite, som en koordinerad sväng.
+  - **Mark:** medar, och landning var som helst med låg sjunkhastighet, liten lutning och plan mark. Annars krasch:
+    - *SKIDS SLIPPED ON THE SLOPE*, *DITCHED IN THE WATER*, *HIT THE GROUND TOO HARD*, *TIPPED OVER LANDING* eller *ROLLED OVER*.
+    - *ROTOR STRIKE* om marken når upp i rotordisken, kontrollerat i fyra punkter.
+  - Bränslet följer kollektiven. Räckvidden beräknas vid marschkollektiv och 80 % av toppfarten.
+- **Typer** ([sim/planes.py](src/flightsim/sim/planes.py)): `TYPES` är flygplanen följt av helikoptrarna, och `make_vehicle` bygger rätt flygmodell. Byte i pausmenyn skapar en ny farkost på samma plats, nu även på helikopterplattor.
+
+  | Typ | Toppfart | Stigning | Lutning | Vridning | Tank (full kollektiv) |
+  |---|---|---|---|---|---|
+  | `SCOUT` | 80 | 18 | 30° | 1,8 rad/s | 6 min |
+  | `UTILITY` | 65 | 14 | 25° | 1,1 rad/s | 8 min |
+  | `TANDEM` | 55 | 10 | 18° | 0,6 rad/s | 12 min |
+
+  Turbulensen påverkar dem 1,3, 0,8 och 0,4 gånger så mycket.
+- **Modeller och bilder:**
+  - Kropp med kabinglas, motorkåpa, stjärtbom med fena, medar på stag, en huvudrotor (två blad för `SCOUT`, fyra för `UTILITY`) och en stjärtrotor som snurrar tre gånger så fort. `TANDEM` har en lång kropp, hjul och två trebladiga rotorer som snurrar åt olika håll.
+  - Propellrar och rotorer är nu samma sak (`Rotor`: nav, längd, axel, antal blad och fart).
+  - På avstånd används egna sprites i fem vyer. Vraket är modellen utan rotor och med böjd bom.
+- **Spelet:**
+  - *COL* i stället för *THR*, ingen stallzon på fartbandet, och en driftmätare (ring och linje) längst ned när farten är under 25.
+  - Rotorljudet är ett pulserande brus som går fortare och starkare med kollektiven.
+  - Jaktkameran följer en vågrät version av helikoptern, så att bilden inte tippar framåt i fart.
+  - Landning utanför banor ger *TOUCHDOWN: SMOOTH (1.8 SINK)* och på en platta *SKOHAM HELIPAD: BUTTER (…)*.
+  - Trafiken flyger bara flygplan.
+- **Helikopterplattor** ([terrain/helipads.py](src/flightsim/terrain/helipads.py)):
+  - 80 % av byarna och 70 % av fyrarna får en platta med chans från `(seed, plats)`. Den läggs på den plattaste av 20 platser 40–90 enheter från byn (22–60 från fyren), som är torr, högst 4 enheters höjdskillnad och minst 21 enheter från husen.
+  - Plattan är 14 × 14 enheter med översidan 0,4 över den högsta marken under den. Den ritas som en betongplatta med vitt H och gul kant ([render/buildings.py](src/flightsim/render/buildings.py)) inom 700 enheter, och som ett H på kartan.
+  - Den är mark för flygmodellen (`flight_ground`), och man kan tanka och byta typ där. Träd växer inte på den.
+  - Ungefär hälften av byarna och fyrarna får en platta, sex stycken på 8 × 8 km kring start.
+- **Utmärkelser:** *STEADY HANDS* (sväva 30 s under 10), *REVERSE GEAR* (baklänges 5 s), *SUMMIT* (landa över 200 över havet), *ON THE SPOT* (landa på en platta) och *PAD HOPPER* (5 olika plattor). Det blir 31 totalt. Landning på en bro blev inte av, eftersom broar inte är mark för flygmodellen.
+- **Tester:** 16 nya (totalt 323):
+  - Flygningen: rätt flygmodell per typ, stilla svävning, toppfart per typ, åt sidan och bakåt med upprätning, och stigförmåga per typ.
+  - Marken: mjuk landning och ny lyftning, krasch i backe, i vatten och vid motorstopp, rotorträff mot en klippa, och platshållning i vind.
+  - Bränsle och gränssnittet mot resten av spelet, helikopterutmärkelserna, plattornas placering och att beskrivningarna får plats.
+- **Provkört i riktigt fönster:** *UTILITY* från bana 657 med start, stigning, framfart och inbromsning, i cockpit och jaktvy. Sedan över SKOHAM HELIPAD, där `S` hela vägen gav landning, tankning och *ON THE SPOT*. Helikoptrarna visades också i rutan på startskärmen.
+  - Första landningen gick in i ett hus, eftersom hjälpen bromsade farten mot luften och helikoptern drev med vinden. Nu bromsas farten mot marken.
+- **Framtida förbättringar:** helikoptrar i trafiken (till exempel mellan plattor och flygfält, med en svävande sista bit), ett mer realistiskt styrläge, landning på broar och tak, och egna tidslopp för helikoptrar med tätare ringar.
 
 ---
 

@@ -94,13 +94,22 @@ class Audio:
         self.playing = SILENT
         self.last_state: FlightState | None = None
 
-    def set_engine(self, note: int) -> None:
-        """Engine loops starting at Pyxel note ``note``: lower for a bigger plane."""
-        self.engine = [
-            self._engine_sound(note, level) for level in range(ENGINE_LEVELS)
-        ]
+    def set_engine(self, note: int, rotor: bool = False) -> None:
+        """Engine loops starting at Pyxel note ``note``: lower for a bigger plane.
+        A ``rotor`` gives a helicopter's beat instead of a propeller's drone."""
+        sound = self._rotor_sound if rotor else self._engine_sound
+        self.engine = [sound(note, level) for level in range(ENGINE_LEVELS)]
         if hasattr(self, "playing"):  # restart the engine loop with the new sound
             self.playing = replace(self.playing, engine=None)
+
+    @staticmethod
+    def _rotor_sound(note: int, level: int) -> pyxel.Sound:
+        """Thuds of noise with gaps between: the blades' beat, quicker and
+        louder with more collective."""
+        low = note_name(note + level)
+        volume = str(3 + level * 4 // ENGINE_LEVELS)
+        gap = "r" * max(1, 3 - level // 3)
+        return make_sound(low + gap + low + gap, "n", volume, "f", 3)
 
     @staticmethod
     def _engine_sound(note: int, level: int) -> pyxel.Sound:

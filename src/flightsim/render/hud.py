@@ -21,6 +21,7 @@ import pyxel
 from flightsim.render.framebuffer import screen_array
 from flightsim.sim.aircraft import Aircraft, Alert, FlightState
 from flightsim.sim.camera import Camera
+from flightsim.sim.helicopter import Helicopter
 from flightsim.sim.race import Phase, Race, format_time
 from flightsim.terrain.airfields import Airfield
 from flightsim.terrain.world import TerrainWorld
@@ -40,6 +41,7 @@ MINIMAP_SIZE = 40
 MINIMAP_SCALE = 16.0  # world units per minimap pixel
 TURBULENCE_WARNING = 0.45  # turbulence (0..1) above which the HUD warns
 FUEL_LOW = 0.15  # share of a full tank below which the HUD warns
+DRIFT_SHOWN = 25.0  # a helicopter slower than this shows its drift
 TRAFFIC_RANGE = 400.0  # other aircraft closer than this (horizontally)...
 TRAFFIC_HEIGHT = 100.0  # ...and this (vertically) set off the TRAFFIC warning
 
@@ -117,7 +119,10 @@ class Hud:
             self.waypoint(plane, target)
         self.speed_tape(plane)
         self.altitude_tape(plane, agl)
-        self.throttle(plane.throttle)
+        helicopter = isinstance(plane, Helicopter)
+        self.throttle(plane.throttle, "COL" if helicopter else "THR")
+        if helicopter:
+            self.drift(plane)
         if plane.uses_fuel:
             self.fuel(plane)
         self.wind(plane, wind)
@@ -270,7 +275,8 @@ class Hud:
 
     def speed_tape(self, plane: Aircraft) -> None:
         x = 6
-        self._tape(x, plane.speed, 1.2, 10, 20, True, plane.settings.stall_speed)
+        stall = plane.settings.stall_speed or None  # helicopters do not stall
+        self._tape(x, plane.speed, 1.2, 10, 20, True, stall)
         shadow_text(x + 7, TAPE_TOP - 7, "SPD", HUD)
 
     def altitude_tape(self, plane: Aircraft, agl: float) -> None:
@@ -294,13 +300,30 @@ class Hud:
             radar = CAUTION if agl < 40 else HUD
             shadow_text(x + 2, below + 7, f"R {max(agl, 0):3.0f}", radar)
 
-    def throttle(self, throttle: float) -> None:
+    def throttle(self, throttle: float, label: str = "THR") -> None:
         x, bottom, height = 6, pyxel.height - 6, 28
         pyxel.rect(x, bottom - height, 6, height, pyxel.COLOR_BLACK)
         fill = round((height - 2) * throttle)
         pyxel.rect(x + 1, bottom - 1 - fill, 4, fill, HUD)
         pyxel.rectb(x, bottom - height, 6, height, HUD)
-        shadow_text(x + 9, bottom - 6, f"THR {throttle * 100:3.0f}%", HUD)
+        shadow_text(x + 9, bottom - 6, f"{label} {throttle * 100:3.0f}%", HUD)
+
+    def drift(self, plane: Helicopter) -> None:
+        """Which way and how fast a slow helicopter moves over the ground, seen
+        from above with the nose up: a line from the middle of a small ring."""
+        if plane.speed > DRIFT_SHOWN or plane.state is not FlightState.FLYING:
+            return
+        cx, cy, radius = pyxel.width // 2, pyxel.height - 20, 8
+        heading = plane.heading
+        nose = (math.sin(heading), -math.cos(heading))
+        right = (math.cos(heading), math.sin(heading))
+        vx, vy = float(plane.velocity[0]), float(plane.velocity[1])
+        ahead = vx * nose[0] + vy * nose[1]
+        side = vx * right[0] + vy * right[1]
+        scale = radius / DRIFT_SHOWN
+        pyxel.circb(cx, cy, radius, HUD)
+        pyxel.pset(cx, cy, TEXT)
+        pyxel.line(cx, cy, cx + side * scale, cy - ahead * scale, CAUTION)
 
     def fuel(self, plane: Aircraft) -> None:
         """Fuel gauge beside the throttle: tank level and time left at this
@@ -417,11 +440,12 @@ class Hud:
             case Alert.PULL_UP if blink:
                 centered_text(h // 2 + 14, "PULL UP", CAUTION)
         if plane.state is FlightState.LANDED:
-            hint = (
-                "LANDED"
-                if plane.speed > 1
-                else "LANDED - THROTTLE UP, PULL BACK TO LIFT OFF"
-            )
+            if plane.speed > 1:
+                hint = "LANDED"
+            elif isinstance(plane, Helicopter):
+                hint = "LANDED - HOLD W TO LIFT OFF"
+            else:
+                hint = "LANDED - THROTTLE UP, PULL BACK TO LIFT OFF"
             centered_text(h // 2 + 14, hint, HUD)
 
     def crash_message(self, plane: Aircraft) -> None:

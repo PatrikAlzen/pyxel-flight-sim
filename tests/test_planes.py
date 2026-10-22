@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 
 from flightsim.controls import Controls
-from flightsim.render.sprites import _COLORS, plane_sprites
+from flightsim.render.sprites import _COLORS, helicopter_sprites, plane_sprites
 from flightsim.sim.aircraft import Aircraft, FlightState
-from flightsim.sim.planes import CARGO, SEAPLANE, STUNT, TRAINER, TYPES, by_name
+from flightsim.sim.planes import CARGO, PLANES, SEAPLANE, STUNT, TRAINER, TYPES, by_name
 from flightsim.sim.wrecks import Wrecks
 
 DT = 1 / 30
@@ -46,19 +46,19 @@ def roll_time(plane_type) -> float:
 
 
 def test_types_have_their_character():
-    speeds = {t.name: t.top_speed for t in TYPES}
+    speeds = {t.name: t.top_speed for t in PLANES}
     assert speeds["STUNT"] > speeds["TRAINER"] > speeds["SEAPLANE"] > speeds["CARGO"]
     assert speeds["CARGO"] == pytest.approx(110, abs=1)
     assert STUNT.settings.stall_speed < TRAINER.settings.stall_speed
     assert CARGO.settings.stall_speed > TRAINER.settings.stall_speed
     assert roll_time(STUNT) < roll_time(TRAINER) < roll_time(CARGO)
-    distances = {t.name: takeoff_distance(t) for t in TYPES}
+    distances = {t.name: takeoff_distance(t) for t in PLANES}
     assert distances["STUNT"] < distances["TRAINER"] < distances["CARGO"]
     assert distances["CARGO"] < 300 * 0.9  # still fits on a runway
 
 
 def test_tank_sizes_differ():
-    minutes = {t.name: 1 / t.settings.full_burn / 60 for t in TYPES}
+    minutes = {t.name: 1 / t.settings.full_burn / 60 for t in PLANES}
     assert minutes["STUNT"] < minutes["TRAINER"] < minutes["CARGO"]
 
 
@@ -124,7 +124,10 @@ def test_sea_level_can_be_set_per_world():
 
 def test_every_type_has_complete_sprites():
     for t in TYPES:
-        views = plane_sprites(t.body, t.trim, t.settings.floats)
+        if t.helicopter:
+            views = helicopter_sprites(t.body, t.trim)
+        else:
+            views = plane_sprites(t.body, t.trim, t.settings.floats)
         assert set(views) == {"rear", "front", "side", "top", "wreck"}
         for rows in views.values():
             assert len({len(row) for row in rows}) == 1
@@ -146,3 +149,7 @@ def test_wrecks_remember_their_type():
     assert wrecks.to_list() == [[10.0, 0.0, 1.0, 3], [20.0, 0.0, 1.0, 2]]
     positions, kinds = wrecks.near_with_kinds(18.0, 0.0, 5.0)
     assert kinds.tolist() == [2] and positions[0][0] == 20.0
+
+
+def test_descriptions_fit_beside_the_title_screen_model():
+    assert all(len(t.description) <= 40 for t in TYPES)
