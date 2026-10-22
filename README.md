@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8i klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser och flygplan som 3D-modeller.
+> **Status:** fas 0–6, 7a–7e och 8a–8i klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8i är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser och flygplan som 3D-modeller. Nästa steg är 8j: helikoptrar.
 
 ---
 
@@ -1270,6 +1270,59 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
   - 2 nya tester (totalt 295): att prismats ytor pekar utåt, och att porten vetter mot banan och bara syns framifrån.
   - Provkört i fönstret från fem håll: framifrån, snett från sidan, bakifrån, ovanifrån och nära marken. Vindstruten är fortfarande en bild.
 
+#### 8j – Helikopterläge *(stor)*
+
+Målet är ett annat sätt att flyga: att kunna sväva, flyga sakta längs en flod, backa och landa på en bergstopp eller en äng, med några helikoptertyper att välja mellan.
+
+- **Förstudie:**
+  - Resten av spelet använder nästan bara det som både ett plan och en helikopter har:
+    - position, framåt- och uppvektor, fart och vertikalfart
+    - gas, tillstånd (`FLYING`, `LANDED`, `CRASHED`) och tid i det, och bränsle
+    - `respawn`, `park`, `crash` och `alert`
+  - Flygplanets egna inställningar används på få ställen utanför flygmodellen: `stall_speed` tre gånger (fartbandets röda zon och varningen), `gear_height` tre gånger, `max_touchdown_sink` och `floats` en gång var.
+  - Jaktkameran, repriserna, fotoläget, kartan, bränslet, vraken och utmärkelserna fungerar därför med en helikopter som har samma gränssnitt.
+- **Flygmodell** (ny `sim/helicopter.py`, en `Helicopter` med samma gränssnitt som `Aircraft`):
+  - **Hastighet och krafter:** hastigheten är en vektor i stället för en fart längs nosen. Rotorn ger dragkraft längs uppvektorn, `kollektiv × max_lift × lufttäthet`, och tyngden, luftmotståndet och vinden verkar på hastigheten.
+  - **Rörelse:** svävning blir en jämvikt (kollektiv ~0,5), och att luta helikoptern ger acceleration åt det hållet. Toppfarten följer av största lutning och motstånd. Det finns ingen stall.
+  - **Styrning med hjälp** (standard), eftersom en pilspelare inte kan hålla en verklig helikopter stilla:
+    - spaken ställer en lutning (±25°) i stället för en vridhastighet, och helikoptern rätar upp sig när spaken släpps
+    - `A`/`D` vrider stjärtrotorn och därmed kursen
+    - `W`/`S` är kollektiv, med ett mjukt hack vid svävläget
+    - *HOVER HOLD* (valfritt) håller höjden och bromsar driften
+  - **Mark:** medar i stället för hjul. Den kan landa var som helst där marken är plan nog och sjunkhastigheten låg. Branter, vatten, rygg- eller sidläge och rotorn mot terrängen eller ett objekt ger krasch: *ROTOR STRIKE*, *ROLLED OVER* eller *DITCHED IN THE WATER*.
+  - Bränsleförbrukningen följer kollektiven. Tankning går på flygfält och på *helikopterplattor* (se nedan).
+- **Typer**, som `AircraftType` i samma lista som flygplanen, så att valet på startskärmen, i pausmenyn och i profilen fungerar som i dag:
+
+  | Typ | Känsla |
+  |---|---|
+  | `SCOUT` | liten och snabb, kvick att vrida, liten tank, känslig för turbulens |
+  | `UTILITY` | balanserad allroundhelikopter, stabil |
+  | `TANDEM` | tung tandemrotor, långsam och trög, stor tank, nästan opåverkad av turbulens |
+
+- **Modeller** (med modellritaren från 8i): kropp, stjärtbom, medar, en roterande huvudrotor (två till fyra blad, ditherad skiva när den snurrar fort) och en stjärtrotor. `TANDEM` har två huvudrotorer och ingen stjärtrotor.
+  - Den roterande modellen på startskärmen fungerar direkt.
+  - På avstånd behövs små sprites (bakifrån, framifrån, sidan och ovanifrån), eller en förenklad modell som fortfarande läses som en helikopter.
+  - Varje typ får ett vrak med böjd bom och avbrutna blad.
+- **Kopplingar i spelet:**
+  - *HUD:* kollektiv i stället för gas, ingen stallzon på fartbandet, och en liten driftpil som visar hastigheten i sidled och bakåt vid svävning.
+  - *Ljud:* ett pulserande rotordunk vars takt följer rotorvarvet, i stället för motorljudet.
+  - *Jaktkamera:* följer kursen i stället för nosen, så att bilden inte tippar när helikoptern lutar framåt i fart.
+  - *Tidslopp:* fungerar, med rekord per typ. Banorna är lagda för flygplanens fart och kan kännas långa.
+  - *Utmärkelser:* några egna, till exempel sväva 30 sekunder under 10 enheter, landa på en bergstopp över 200 enheter, landa på en bro, och flyga baklänges.
+- **Helikopterplattor (valfritt):** en platta vid en del byar och fyrar, med en markering på kartan, där man kan landa och tanka.
+
+**Tester:**
+- Flygegenskaper: att helikoptern svävar stilla vid rätt kollektiv, att lutning ger fart åt rätt håll, att toppfart och stigförmåga stämmer per typ, och att den rätar upp sig när spaken släpps.
+- Mark: att landning på plan mark lyckas och på branter misslyckas, att rotorn mot en vägg ger krasch, och att den lyfter igen med kollektiv.
+- Spelet: att repriser, vrak och bränsle fungerar, att gamla sparfiler läses in, och att varje typ har kompletta modeller.
+
+**Att bestämma:**
+- Om det bara blir den förenklade styrningen eller också ett mer realistiskt läge (vridhastighet i stället för lutning, ingen automatisk upprätning).
+- Om helikopterplattor ska byggas.
+- Om trafiken också ska få helikoptrar.
+
+**Risk:** känslan. Det är lätt att göra helikoptern antingen omöjlig att styra eller tråkig, och hjälpen behöver provas fram i riktigt fönster. Tidsloppens banor passar sämre, vilket mildras med egna rekord per typ. **Klart när:** man kan välja en helikopter, lyfta, sväva, flyga, landa på en äng och tanka på ett flygfält, och alla tre typerna känns olika.
+
 ---
 
 #### Ordning och beroenden (fas 8)
@@ -1285,8 +1338,9 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
 | 8g Trafik | Stor | grund 3, 7b, 8d | Levande luftrum |
 | 8h Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
 | 8i Flygplan i 3D | Medel | grund 3, 8d, 8f | Riktig form från alla håll, mer liv i jaktvy, foton och repriser |
+| 8j Helikoptrar | Stor | 8c, 8d, 8i | Ett annat sätt att flyga: sväva, landa var som helst |
 
-8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora.
+8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora. 8j bygger på typerna (8d), bränslet (8c) och modellerna (8i).
 
 ## Prestanda och risker
 
