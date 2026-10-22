@@ -11,6 +11,7 @@ few pixels, where the hand-drawn sprites read better, so ``draw_plane``
 switches to the sprite below ``LOD_PIXELS``.
 """
 
+import functools
 import math
 from dataclasses import dataclass
 
@@ -314,6 +315,29 @@ SHOWCASE_PITCH = -0.35  # the turning model on the title screen is seen from abo
 SHOWCASE_MARGIN = 2.0  # pixels kept clear inside the frame
 
 
+@functools.cache
+def model_bounds(kind: int) -> tuple[np.ndarray, float]:
+    """The middle and radius of a sphere round aircraft type ``kind`` with its
+    propellers or rotors at every angle: the body, and the whole circle each
+    set of blades sweeps."""
+    body, rotors = MODELS[kind]
+    points = [body.vertices]
+    around = np.linspace(0, math.tau, 32, endpoint=False)
+    for rotor in rotors:
+        c, s_ = np.cos(around) * rotor.radius, np.sin(around) * rotor.radius
+        zero = np.zeros_like(around)
+        # The circle lies across the axis the rotor turns about.
+        circle = {
+            "y": np.column_stack([c, zero, s_]),
+            "z": np.column_stack([c, s_, zero]),
+            "x": np.column_stack([zero, c, s_]),
+        }[rotor.axis]
+        points.append(circle + (rotor.x, rotor.y, rotor.z))
+    v = np.concatenate(points)
+    middle = (v.min(axis=0) + v.max(axis=0)) / 2
+    return middle, float(np.linalg.norm(v - middle, axis=1).max())
+
+
 def showcase_pose(
     kind: int, angle: float, renderer: VoxelRenderer, propeller: float = 0.0
 ) -> tuple[Mesh, np.ndarray, np.ndarray, np.ndarray, Camera]:
@@ -322,12 +346,12 @@ def showcase_pose(
     ``renderer``'s picture at every angle: (mesh, position, forward, up, camera).
 
     The fit uses the sphere round the model, which a turning model never
-    leaves, so nothing reaches past the edge however it is turned.
+    leaves, so nothing reaches past the edge however it is turned. The sphere
+    is the same whatever the blades are doing (see ``model_bounds``), so the
+    model holds still in the frame while its rotors turn.
     """
     mesh = plane_mesh(kind, propeller)
-    v = mesh.vertices
-    middle = (v.min(axis=0) + v.max(axis=0)) / 2
-    radius = float(np.linalg.norm(v - middle, axis=1).max())
+    middle, radius = model_bounds(kind)
     room = min(renderer.width, renderer.height) / 2 - SHOWCASE_MARGIN
     # A sphere of radius r at distance d looks r / sqrt(d^2 - r^2) wide.
     distance = radius * math.sqrt(1 + (renderer.focal / room) ** 2)

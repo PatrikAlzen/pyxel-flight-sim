@@ -203,3 +203,23 @@ def test_title_screen_model_draws_only_inside_its_frame(screen):
         assert (inside != SKY).any()
         image[55:103, 197:251] = SKY
         assert (image == SKY).all()  # nothing drawn outside the frame
+
+
+@pytest.mark.parametrize("kind", range(len(TYPES)))
+def test_title_screen_model_holds_still_while_its_rotors_turn(kind):
+    """The frame was fitted to the blades where they happened to be, so the
+    model jumped about as they turned (worst with a helicopter's long rotor)."""
+    from flightsim.render.models import showcase_pose
+    from flightsim.render.voxel import VoxelRenderer
+
+    renderer = VoxelRenderer(54, 48)
+    places = []
+    for blades in np.linspace(0, math.tau, 13):
+        mesh, position, forward, up, camera = showcase_pose(
+            kind, 0.7, renderer, propeller=blades
+        )
+        places.append(position)
+        world = place(mesh, position, forward, up)
+        xs, ys = zip(*(camera.project(p, renderer.focal, 54, 48)[:2] for p in world))
+        assert min(xs) >= 1 and max(xs) <= 53 and min(ys) >= 1 and max(ys) <= 47
+    assert np.allclose(places, places[0])
