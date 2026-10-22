@@ -96,7 +96,7 @@ from flightsim.sim.race import (
     format_time,
     ghost_position,
 )
-from flightsim.sim.replay import Playback, Recorder, TowerSettings, tower_spot
+from flightsim.sim.replay import Playback, Recorder, tower_due, tower_spot
 from flightsim.sim.traffic import Flight, Traffic, closest_approach, midair
 from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
@@ -861,9 +861,7 @@ class App:
                 cam.altitude = plane.altitude + config.COCKPIT_HEIGHT
                 cam.set_vectors(plane.forward, plane.up)
             case "TOWER":
-                if self.tower is None or (
-                    np.linalg.norm(self.tower - target) > TowerSettings().reach
-                ):
+                if tower_due(self.tower, target, plane.forward):
                     self.tower = tower_spot(
                         self.playback.recording,
                         self.playback.time,

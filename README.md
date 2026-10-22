@@ -874,7 +874,8 @@ Målet är att kunna se om en landning, en loop eller en krasch från andra vink
 - **Kameror** (`C`):
   - *CHASE:* en egen jaktkamera.
   - *COCKPIT.*
-  - *TOWER:* en fast kamera 45 enheter vid sidan av där planet är om 2,5 s, nära marken eller högst 40 enheter under planet. Den följer planet med blicken och flyttar till andra sidan när planet är mer än 220 enheter bort.
+  - *TOWER:* en fast kamera 45 enheter vid sidan av där planet är om 1,5 s, nära marken eller högst 40 enheter under planet. Den följer planet med blicken och flyttar till andra sidan när planet har passerat och är 120 enheter bortom kameran, eller om planet svängt iväg och är 600 enheter bort.
+    - **Rättat efteråt:** först flyttade kameran när planet var mer än 220 enheter bort. En plats 2,5 s framåt ligger redan ~250 enheter bort i normal fart, så kameran flyttade varje bildruta och hoppade från sida till sida (127 gånger på 10 s i ett test). Nu byter den plats ungefär var 2,5:e sekund, och ett test kör en hel repris och kontrollerar det.
   - *FREE:* kretsar runt planet med `A`/`D`, `Q`/`E` och `W`/`S`.
   - Efter kraschen tittar jakt- och cockpitkameran på vraket från där de var.
 - **Krascher i reprisen:** explosionen spelas upp när händelsen passeras, och röken brinner så länge planet ligger kraschat. Det sker i en egen partikeluppsättning, så att det levande spelets rök ligger kvar. Vraket från kraschen syns inte förrän kraschen har skett i reprisen. Planet ritas med `draw_aircraft` från 8a.

@@ -200,11 +200,33 @@ class Playback:
 
 @dataclass(frozen=True)
 class TowerSettings:
-    lead: float = 2.5  # seconds: stand where the plane is about to be...
+    lead: float = 1.5  # seconds: stand where the plane is about to be...
     side: float = 45.0  # ...this far to one side of its path
     height: float = 6.0  # above the ground
     below: float = 40.0  # but at most this far below a plane flying higher up
-    reach: float = 220.0  # move on when the plane is further away than this
+    # Move on once the plane has flown past and is this far beyond the camera,
+    # or, if it turned away instead, once it is this far off at all.
+    passed: float = 120.0
+    lost: float = 600.0
+
+
+def tower_due(
+    tower: np.ndarray | None,
+    position: np.ndarray,
+    forward: np.ndarray,
+    settings: TowerSettings | None = None,
+) -> bool:
+    """Whether the tower camera should move to a new spot: the plane has gone
+    by it (the tower is behind the nose) and is ``passed`` away, or it is
+    ``lost`` away. A spot is chosen ahead of the plane, so it starts well over
+    ``passed`` away and must not count as passed already."""
+    if tower is None:
+        return True
+    s = settings or TowerSettings()
+    offset = np.asarray(tower, float) - np.asarray(position, float)
+    distance = float(np.linalg.norm(offset))
+    behind = float(offset[:2] @ np.asarray(forward, float)[:2]) < 0
+    return (behind and distance > s.passed) or distance > s.lost
 
 
 def tower_spot(

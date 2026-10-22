@@ -143,9 +143,33 @@ def test_tower_stands_beside_the_path_ahead_near_the_ground():
     fly(recorder, plane, 6.0)
     recording = recorder.recording()
     spot = tower_spot(recording, 1.0, ground)
-    ahead = recording.at(3.5).position
+    ahead = recording.at(2.5).position
     sideways = math.hypot(spot[0] - ahead[0], spot[1] - ahead[1])
     assert sideways == pytest.approx(45.0, abs=1.0)
     assert spot[2] >= ground(0, 0) + 6.0 - 1e-9
     other = tower_spot(recording, 1.0, ground, side=-1.0)
     assert np.sign(other[0] - ahead[0]) != np.sign(spot[0] - ahead[0])
+
+
+def test_tower_camera_holds_its_spot_until_the_plane_has_gone_by():
+    """It used to move every frame: a spot 2.5 s ahead is already further away
+    than the old limit, so the view jumped from side to side."""
+    from flightsim.sim.replay import tower_due
+
+    recorder, plane = Recorder(), flying_plane()
+    plane.altitude = 70.0
+    fly(recorder, plane, 30.0)  # half a minute straight and level
+    recording = recorder.recording()
+    playback = Playback(recording)
+    tower, side, moves, frame = None, 1.0, [], 0
+    while not playback.finished:
+        playback.step(DT)
+        pose = playback.pose()
+        if tower_due(tower, pose.position, pose.forward):
+            tower = tower_spot(recording, playback.time, ground, side=side)
+            side = -side
+            moves.append(frame)
+        frame += 1
+    gaps = np.diff(moves)
+    assert len(moves) >= 3  # it does move on
+    assert gaps.min() > 60  # but holds each spot for seconds, not frames
