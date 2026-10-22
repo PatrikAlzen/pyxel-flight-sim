@@ -10,6 +10,12 @@ TITLE = "Pyxel Flight Sim"
 SCREEN_W = 768
 SCREEN_H = 432
 TERRAIN_SCALE = 3
+# The HUD, menus and text are drawn UI_SCALE times smaller than the screen and
+# scaled up: Pyxel's 4x6 font then shows as 8x12 pixels.
+UI_SCALE = 2
+# The HUD, menus and text are drawn UI_SCALE times smaller than the screen and
+# scaled up: Pyxel's 4x6 font then shows as 8x12 pixels.
+UI_SCALE = 2
 DISPLAY_SCALE = 2
 FPS = 30
 

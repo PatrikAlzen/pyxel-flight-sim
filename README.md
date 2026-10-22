@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8k klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8k är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller, helikoptrar med helikopterplattor och världen i 768 × 432 över en uppskalad terräng. Nästa steg är 8l: HUD och menyer i hög upplösning.
+> **Status:** fas 0–6, 7a–7e och 8a–8l klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8l är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller, helikoptrar med helikopterplattor, världen i 768 × 432 över en uppskalad terräng och ett skarpare gränssnitt i 384 × 216.
 
 ---
 
@@ -1393,7 +1393,7 @@ Kan upplösningen höjas, till exempel till 800 × 600? Terrängritningen tar ti
 
 Därför delas bilden i två upplösningar: **terrängen** (med himmel, dimma, moln och vatten) ritas som i dag i 256 × 144 och skalas upp tre gånger, medan **allt ovanpå** ritas i 768 × 432. Det är samma format (16:9), så ingenting förvrängs. Terrängen ser ut precis som nu, medan modeller, broar, träd, partiklar, text och instrument blir tre gånger skarpare. Fönstret blir 768 × 432 gånger en visningsskala (till exempel 2).
 
-#### 8k – Blandad upplösning: världen *(medel–stor)*
+#### 8k – Blandad upplösning: världen ✅
 
 Målet är att allt som ritas ovanpå terrängen ritas i full upplösning, så att planen, helikoptrarna, broarna, hangarerna, plattorna, träden och effekterna blir skarpa, medan terrängen kostar lika lite som i dag.
 
@@ -1443,7 +1443,7 @@ Målet är att allt som ritas ovanpå terrängen ritas i full upplösning, så a
   - Karta, paus, fotoläge med sparat foto, och repris i cockpit- och tornvy.
   - Natt med storm och regn, krasch i vattnet med rök och eld, och trafikplan.
 
-#### 8l – Blandad upplösning: HUD och menyer *(medel)*
+#### 8l – Blandad upplösning: HUD och menyer ✅
 
 Målet är skarp text och skarpa instrument i den nya upplösningen, med samma utseende som i dag men tydligare, och plats för lite mer information.
 
@@ -1455,6 +1455,29 @@ Målet är skarp text och skarpa instrument i den nya upplösningen, med samma u
 
 **Tester:** att all text får plats på skärmen och i sina rutor (pausmenyn, utmärkelselistan och beskrivningarna på startskärmen, i den nya storleken), att HUD:ens delar inte överlappar varandra (deras rektanglar kontrolleras), och att minikartans projektion stämmer med flygplanets position. **Klart när:** en skriptad tur genom startskärm, flygning (cockpit och jaktvy), paus, karta, repris och fotoläge visar skarp text och skarpa instrument utan överlapp, och spelet håller 30 bilder per sekund i samma vyer som i dag.
 
+
+**Resultat:**
+
+- **Gränssnittet i 384 × 216** (`config.UI_SCALE = 2`): HUD, menyer, karta och text ritas på ett lager som är halva skärmens storlek och skalas upp två gånger (`scale_onto_screen`).
+  - Pyxels typsnitt blir då 8 × 12 skärmpixlar, alltså den förstorade pixeltexten från planen. Linjer och text har samma pixelstorlek, så stilen hänger ihop.
+  - Ett eget typsnitt eller text i 768 × 432 provades inte. Det skulle ge text i 2 px och linjer i 1 px, vilket ser splittrat ut.
+  - Gränssnittet är 1,5 gånger skarpare än i 8k och har 1,5 gånger så mycket plats. HUD:en tar mindre av bilden.
+- **HUD:en** ([render/hud.py](src/flightsim/render/hud.py)):
+  - Fart- och höjdbanden är längre (84 i stället för 56).
+  - Kompassen visar ±84°.
+  - Lutningsstegen är större och följer horisonten med gränssnittets brännvidd (`UI_FOCAL`).
+  - Minikartan är 64 × 64 med 10 enheter per pixel, alltså finare och lite större yta än förut (40 × 40 med 16).
+- **Kartan och förhandsvisningen** fyller lagret, så de visar 1,5 gånger så mycket i varje led vid samma zoom.
+- **Menyer:**
+  - Pausmenyn är 130 bred. Förut var den 100, och *WEATHER: PARTLY CLOUDY* med pilar stack ut.
+  - Platslistan visar 12 rader (förut 7) och utmärkelselistan 14 (förut 9).
+  - Utmärkelserutan är 260 bred, så den längsta beskrivningen med datum får plats.
+- **Startskärmen** har ny layout: större titel (×4), valen till vänster och en större ruta för det roterande planet (100 × 76, modellen i 196 × 148 skärmpixlar).
+- **Ringpilen** ritas på gränssnittet med dess brännvidd, på avstånd i proportion till skärmen.
+- **Fixat:** i 8k blev hjälptexterna i fotoläget och reprisen *UW/S* och *UH HELP* (en ersättning av namn som gick för långt). De är *W/S* och *H HELP* igen.
+- **Prestanda:** 28,3–28,9 fps i samma tur som i 8k, oförändrat inom mätbruset.
+- **Tester:** 3 nya (totalt 338). De kontrollerar att menyernas och startskärmens text får plats, att HUD:ens delar (kompass, band, gas, bränsle, vind, minikarta, drift) inte överlappar och ligger på lagret, för både flygplan och helikopter, och att minikartan visar trafik på rätt plats.
+- **Provkört i riktigt fönster** med skärmdumpar: startskärm, start på bana i cockpit, jaktvy med ringar och utmärkelse, karta, paus, fotoläge med sparat foto och repris.
 ---
 
 #### Ordning och beroenden (fas 8)

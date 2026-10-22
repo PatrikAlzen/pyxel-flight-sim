@@ -1,6 +1,6 @@
 """Head-up display: instruments, minimap and warnings drawn over the 3D view.
 
-Layout (256x144):
+Layout (384x216, the interface layer):
 
     compass band and heading            top centre
     speed tape                          left
@@ -32,13 +32,14 @@ WARN = pyxel.COLOR_RED
 CAUTION = pyxel.COLOR_YELLOW
 
 # Speed and altitude tapes; the minimap sits below the altitude tape.
-TAPE_TOP = 24
-TAPE_HEIGHT = 56
+TAPE_TOP = 26
+TAPE_HEIGHT = 84
 TAPE_WIDTH = 26
 TAPE_MID = TAPE_TOP + TAPE_HEIGHT // 2
+COMPASS_HALF = 84  # pixels each side of the heading: one per degree
 
-MINIMAP_SIZE = 40
-MINIMAP_SCALE = 16.0  # world units per minimap pixel
+MINIMAP_SIZE = 64
+MINIMAP_SCALE = 10.0  # world units per minimap pixel
 TURBULENCE_WARNING = 0.45  # turbulence (0..1) above which the HUD warns
 FUEL_LOW = 0.15  # share of a full tank below which the HUD warns
 DRIFT_SHOWN = 25.0  # a helicopter slower than this shows its drift
@@ -148,7 +149,7 @@ class Hud:
         rx, ry = float(level_right @ r), -float(level_right @ u)
         length = math.hypot(rx, ry) or 1.0
         rx, ry = rx / length, ry / length
-        canvas.clip(w / 2 - 64, 22, 128, h - 50)
+        canvas.clip(w / 2 - 96, 24, 192, h - 64)
         for degrees in range(-90, 91, 10):
             e = math.radians(degrees)
             ahead = np.array([sh * math.cos(e), -ch * math.cos(e), math.sin(e)])
@@ -156,7 +157,7 @@ class Hud:
             if spot is None:
                 continue
             cx, cy, _ = spot
-            inner, outer = (14, 64) if degrees == 0 else (14, 34)
+            inner, outer = (18, 92) if degrees == 0 else (18, 48)
             for side in (-1, 1):
                 x1, y1 = cx + side * inner * rx, cy + side * inner * ry
                 x2, y2 = cx + side * outer * rx, cy + side * outer * ry
@@ -188,7 +189,7 @@ class Hud:
         canvas.line(cx + 4, cy, cx + 10, cy, TEXT)
 
     def compass(self, heading: float) -> None:
-        cx, half = canvas.width() // 2, 60
+        cx, half = canvas.width() // 2, COMPASS_HALF
         top = 2
         degrees = math.degrees(heading) % 360
         canvas.rect(cx - half, top, half * 2, 11, pyxel.COLOR_BLACK)
@@ -220,7 +221,7 @@ class Hud:
 
     def waypoint(self, plane: Aircraft, field: Airfield) -> None:
         """A marker on the compass band towards ``field``, plus its number and distance."""
-        cx, half, top = canvas.width() // 2, 60, 2
+        cx, half, top = canvas.width() // 2, COMPASS_HALF, 2
         dx, dy = field.x - plane.x, field.y - plane.y
         bearing = math.degrees(math.atan2(dx, -dy))
         relative = (bearing - math.degrees(plane.heading) + 180) % 360 - 180

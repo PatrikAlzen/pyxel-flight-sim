@@ -53,17 +53,18 @@ def draw_rings(race: Race, camera: Camera, renderer: VoxelRenderer) -> None:
         draw_ring(ring, NEXT_COLOR if k == 0 else LATER_COLOR, camera, renderer)
 
 
-def draw_ring_arrow(ring: Ring, camera: Camera, renderer: VoxelRenderer) -> None:
-    """When the next ring is off screen, an arrow at the edge points the way to it."""
-    w, h = renderer.width, renderer.height
-    spot = camera.project(np.asarray(ring.centre), renderer.focal, w, h)
+def draw_ring_arrow(ring: Ring, camera: Camera, focal: float) -> None:
+    """When the next ring is off screen, an arrow near the edge points the way
+    to it; drawn on the interface, whose focal length is ``focal``."""
+    w, h = canvas.width(), canvas.height()
+    spot = camera.project(np.asarray(ring.centre), focal, w, h)
     if spot is not None and 0 <= spot[0] < w and 0 <= spot[1] < h:
         return
     _, r, u = camera.basis()
     offset = np.asarray(ring.centre) - camera.position
     angle = math.atan2(-float(offset @ u), float(offset @ r))  # screen y grows down
     cx, cy = w / 2, h / 2
-    x, y = cx + math.cos(angle) * 70, cy + math.sin(angle) * 44
+    x, y = cx + math.cos(angle) * w * 0.27, cy + math.sin(angle) * h * 0.3
     tip = (x + math.cos(angle) * 6, y + math.sin(angle) * 6)
     back = angle + math.pi
     left = (x + math.cos(back + 0.6) * 5, y + math.sin(back + 0.6) * 5)
