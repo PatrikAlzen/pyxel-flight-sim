@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8j klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8 är klar: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller och helikoptrar med helikopterplattor.
+> **Status:** fas 0–6, 7a–7e och 8a–8j klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8j är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller och helikoptrar med helikopterplattor. Nästa steg är 8k–8l: högre upplösning för allt utom terrängen.
 
 ---
 
@@ -1374,6 +1374,55 @@ Målet är ett annat sätt att flyga: att kunna sväva, flyga sakta längs en fl
   - Första landningen gick in i ett hus, eftersom hjälpen bromsade farten mot luften och helikoptern drev med vinden. Nu bromsas farten mot marken.
 - **Framtida förbättringar:** helikoptrar i trafiken (till exempel mellan plattor och flygfält, med en svävande sista bit), ett mer realistiskt styrläge, landning på broar och tak, och egna tidslopp för helikoptrar med tätare ringar.
 
+#### Blandad upplösning: förstudie
+
+Kan upplösningen höjas, till exempel till 800 × 600? Terrängritningen tar tid i proportion till antalet pixlar (mätt med moln, i fyra vyer, på en dag då datorn var ojämn):
+
+| Upplösning | Pixlar | Lågt, plant | Högt | Brant nedåt | Roll 60° |
+|---|---|---|---|---|---|
+| 256 × 144 (i dag) | 37 000 | 9 ms | 12 ms | 19 ms | 12 ms |
+| 320 × 180 | 58 000 | 13 ms | 17 ms | 27 ms | 16 ms |
+| 384 × 216 | 83 000 | 18 ms | 31 ms | 44 ms | 29 ms |
+| 426 × 240 | 102 000 | 29 ms | 34 ms | 51 ms | 34 ms |
+| 640 × 360 | 230 000 | 62 ms | 77 ms | 108 ms | 73 ms |
+| 800 × 450 | 360 000 | 100 ms | 125 ms | 156 ms | 112 ms |
+| 800 × 600 | 480 000 | 131 ms | 163 ms | 201 ms | 150 ms |
+
+800 × 600 ger alltså 5–7 bilder per sekund. Det som ritas ovanpå påverkas knappt: 600 träd tar 0,9 ms i 256 × 144 och 2,2 ms i 800 × 600, och ett plan som 3D-modell tar 0,3 ms oavsett upplösning. Att skala upp en bild på 256 × 144 tre gånger till 768 × 432 tar 1,6 ms i Pyxel.
+
+Därför delas bilden i två upplösningar: **terrängen** (med himmel, dimma, moln och vatten) ritas som i dag i 256 × 144 och skalas upp tre gånger, medan **allt ovanpå** ritas i 768 × 432. Det är samma format (16:9), så ingenting förvrängs. Terrängen ser ut precis som nu, medan modeller, broar, träd, partiklar, text och instrument blir tre gånger skarpare. Fönstret blir 768 × 432 gånger en visningsskala (till exempel 2).
+
+#### 8k – Blandad upplösning: världen *(medel–stor)*
+
+Målet är att allt som ritas ovanpå terrängen ritas i full upplösning, så att planen, helikoptrarna, broarna, hangarerna, plattorna, träden och effekterna blir skarpa, medan terrängen kostar lika lite som i dag.
+
+- **Två upplösningar** (`config.SCREEN_W/H` blir 768 × 432 och `config.TERRAIN_SCALE = 3`):
+  - Terrängen renderas till en egen `pyxel.Image` på 256 × 144 (som i dag via `image_array`) och skalas upp med `pyxel.blt(..., scale=3)` först i varje bildruta.
+  - `VoxelRenderer` behåller sin upplösning. Den får en vy för överläggen: samma kamera och synfält, men `focal`, bredd och höjd för den höga upplösningen.
+- **Djupet per pixel:** överläggen döljs bakom terräng med `pixel_distance`, som finns i terrängens upplösning. `in_front_of_terrain`, `billboard_visible`, `mesh_visible` och broarnas test slår upp den med skärmkoordinater delade med skalan (en hjälpfunktion på renderaren, så att alla gör likadant).
+- **Allt som ritas ovanpå** räknar i den höga upplösningen:
+  - 3D-modellerna (plan, helikoptrar, vrak, hangarer, plattor) och broarna: projektion och klippning via renderarens `focal`, som för överläggen är tre gånger större. Konturen blir en pixel bred i den höga upplösningen och alltså tunnare. Den kan behöva bli två pixlar för att likna dagens utseende.
+  - Bilder (träd, hus, fyrar, vindstrutar, sprites på avstånd): `draw_billboards` och `draw_aircraft` skalar redan efter avstånd, och skalan blir tre gånger större. Pixelkonsten ritas alltså i grövre block än skärmen, men placeras och skalas i fina steg. En gräns för minsta storlek i pixlar behöver räknas om.
+  - Partiklar (rök, eld, gnistor), regnstreck, ringar, fyrlampor och lanternor: radier och linjer i den höga upplösningen.
+  - Förhandsvisningen på startskärmen och fotoläget, där fotot sparas i den nya upplösningen (skala 1 räcker för 768 × 432).
+- **Prestanda:** budgeten för en bildruta är oförändrad, 33 ms. Uppskalningen kostar ~1,6 ms. Överläggen blir något dyrare (träd ~1,5 gånger, modeller oförändrat). Ritningen mäts före och efter med samma vyer som i förstudien.
+
+**Tester:** att uppskalad terräng och överlägg hamnar på samma ställe (en punkt på marken projiceras till samma skärmpixel i båda upplösningarna, avrundat till skalan), att skymningstesterna fungerar i den höga upplösningen (befintliga tester för träd bakom kullar, broar i moln och modeller bakom terräng, i ny upplösning), att varje modell och bild har samma storlek på skärmen i förhållande till terrängen som i dag, och att en bildruta med terräng, 600 träd och två modeller håller sig inom budgeten.
+
+**Risk:** att något överlägg glöms bort och hamnar i fel skala eller på fel ställe. Det mildras genom att låta *all* projektion gå via renderaren, så att det bara finns ett ställe där upplösningen bestäms, och genom en skriptad tur som tar skärmdumpar av varje sorts överlägg. Pixelkonstens utseende ändras: modeller och kanter blir skarpa mot en grövre terräng, vilket kan se splittrat ut. Det provas i riktigt fönster innan HUD:en görs om.
+
+#### 8l – Blandad upplösning: HUD och menyer *(medel)*
+
+Målet är skarp text och skarpa instrument i den nya upplösningen, med samma utseende som i dag men tydligare, och plats för lite mer information.
+
+- **Typsnitt:** Pyxels inbyggda typsnitt är 4 × 6 pixlar och blir för litet i 768 × 432. Text ritas därför förstorad två gånger (via en bild som skalas med `blt`) eller med ett större bitmapstypsnitt (Pyxel kan läsa BDF-typsnitt). Valet görs efter ett prov: förstorad pixeltext liknar dagens stil, och ett större typsnitt är skarpare. `shadow_text`, `centered_text` och alla menyer går via samma funktion.
+- **HUD** ([render/hud.py](src/flightsim/render/hud.py)): alla fasta mått (fart- och höjdband, kompass, gas och bränsle, minikarta, vindpil, driftmätare, varningar) räknas om till den nya upplösningen. Konstanterna samlas i en skala, så att HUD:en kan ritas i två eller tre gånger dagens storlek. Den skarpare upplösningen ger plats för finare skalstreck och tydligare siffror.
+- **Minikarta och stor karta:** minikartan kan visa fler pixlar av terrängen (större eller skarpare). Den stora kartan ritas i full upplösning och visar därmed tre gånger så mycket terräng utan att zooma ut, med text i den nya storleken.
+- **Menyer och skärmar:** startskärmen (titel, val, rutan med det roterande planet), pausmenyn, platser, utmärkelser, laddningsskärm, kraschtext, repris- och fotolägets hjälptext och tidsloppets panel.
+- **Inställning:** visningsskalan i `config.DISPLAY_SCALE` anpassas så att fönstret får en rimlig storlek (768 × 432 × 2 = 1536 × 864).
+
+**Tester:** att all text får plats på skärmen och i sina rutor (pausmenyn, utmärkelselistan och beskrivningarna på startskärmen, i den nya storleken), att HUD:ens delar inte överlappar varandra (deras rektanglar kontrolleras), och att minikartans projektion stämmer med flygplanets position. **Klart när:** en skriptad tur genom startskärm, flygning (cockpit och jaktvy), paus, karta, repris och fotoläge visar skarp text och skarpa instrument utan överlapp, och spelet håller 30 bilder per sekund i samma vyer som i dag.
+
 ---
 
 #### Ordning och beroenden (fas 8)
@@ -1390,8 +1439,10 @@ Målet är ett annat sätt att flyga: att kunna sväva, flyga sakta längs en fl
 | 8h Utmärkelser | Medel | grund 1 och 4, helst allt ovan | Binder ihop allt med små mål |
 | 8i Flygplan i 3D | Medel | grund 3, 8d, 8f | Riktig form från alla håll, mer liv i jaktvy, foton och repriser |
 | 8j Helikoptrar | Stor | 8c, 8d, 8i | Ett annat sätt att flyga: sväva, landa var som helst |
+| 8k Blandad upplösning: världen | Medel–stor | 8i | Skarpa modeller, broar, träd och effekter över dagens terräng |
+| 8l Blandad upplösning: HUD och menyer | Medel | 8k | Skarp text och instrument, plats för mer information |
 
-8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora. 8j bygger på typerna (8d), bränslet (8c) och modellerna (8i).
+8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora. 8j bygger på typerna (8d), bränslet (8c) och modellerna (8i). 8k bör göras före 8l: när världens överlägg ritas i hög upplösning syns det direkt vad HUD:en behöver.
 
 ## Prestanda och risker
 
