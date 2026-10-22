@@ -22,6 +22,21 @@ from flightsim.terrain.noise import smoothstep
 
 Elevation = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
+# The hangar: straight side walls under an arched roof, as wide as this
+# along the runway and as deep across it, its door facing the runway.
+HANGAR_WIDTH = 36.0
+HANGAR_DEPTH = 26.0
+HANGAR_WALL = 10.0  # height of the side walls; the roof rises above them
+HANGAR_ROOF = 8.0
+
+# The control tower: a round shaft carrying a wider glass cab. Heights are
+# above the ground at its foot; the plane crashes into either part.
+TOWER_SHAFT_RADIUS = 2.6
+TOWER_CAB_BOTTOM = 14.0
+TOWER_CAB_RADIUS = 5.2
+TOWER_HEIGHT = 19.0
+TOWER_CAB_MIDDLE = 16.5  # what a fly-by is measured to
+
 
 @dataclass(frozen=True)
 class AirfieldSettings:
@@ -85,7 +100,32 @@ class Airfield:
         """Buildings beside the runway: (kind, x, y)."""
         hangar = self.point(0.0, self.width / 2 + 34)
         windsock = self.point(self.length / 4, -(self.width / 2 + 10))
-        return [("hangar", *hangar), ("windsock", *windsock)]
+        return [("hangar", *hangar), ("windsock", *windsock), ("tower", *self.tower)]
+
+    @property
+    def tower(self) -> tuple[float, float]:
+        """Where the control tower stands: on the hangar's side, towards one
+        end, looking out over the runway."""
+        return self.point(-self.length / 4, self.width / 2 + 30)
+
+
+def hangar_hit(along: float, across: float, height: float) -> bool:
+    """Whether a point ``height`` above a hangar's foot, ``along`` and
+    ``across`` the runway from its middle, is inside the hangar."""
+    half = HANGAR_WIDTH / 2
+    if height < 0 or abs(along) >= half or abs(across) >= HANGAR_DEPTH / 2:
+        return False
+    arch = HANGAR_ROOF * math.sqrt(1.0 - (along / half) ** 2)
+    return height < HANGAR_WALL + arch
+
+
+def tower_hit(dx: float, dy: float, height: float) -> bool:
+    """Whether a point ``height`` above a tower's foot and (dx, dy) from its
+    axis is inside the tower."""
+    if not 0 <= height < TOWER_HEIGHT:
+        return False
+    radius = TOWER_CAB_RADIUS if height >= TOWER_CAB_BOTTOM else TOWER_SHAFT_RADIUS
+    return math.hypot(dx, dy) < radius
 
 
 class Airfields:

@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8l klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8l är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller, helikoptrar med helikopterplattor, världen i 768 × 432 över en uppskalad terräng och ett skarpare gränssnitt i 384 × 216.
+> **Status:** fas 0–6, 7a–7e och 8a–8m klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8m är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller, helikoptrar med helikopterplattor, världen i 768 × 432 över en uppskalad terräng ett skarpare gränssnitt i 384 × 216 samt fyrar och flygledartorn som 3D-modeller.
 
 ---
 
@@ -269,6 +269,7 @@ pyxel-flight-sim/
 │       │   ├── camera.py      # kamerans position och orientering
 │       │   ├── freecam.py     # fri kamera för fotoläget: kretsa runt planet eller flyg
 │       │   ├── events.py      # händelselogg: krasch, landning, ring
+│       │   ├── flyby.py       # nära passager förbi stillastående saker (flygledartornet)
 │       │   ├── replay.py      # inspelning av den senaste minuten, uppspelning, tornkamera
 │       │   ├── planes.py      # typer: TRAINER, STUNT, CARGO, SEAPLANE, SCOUT, UTILITY, TANDEM
 │       │   ├── helicopter.py  # helikopterns flygmodell med styrhjälp, medar, rotorträff
@@ -1478,6 +1479,41 @@ Målet är skarp text och skarpa instrument i den nya upplösningen, med samma u
 - **Prestanda:** 28,3–28,9 fps i samma tur som i 8k, oförändrat inom mätbruset.
 - **Tester:** 3 nya (totalt 338). De kontrollerar att menyernas och startskärmens text får plats, att HUD:ens delar (kompass, band, gas, bränsle, vind, minikarta, drift) inte överlappar och ligger på lagret, för både flygplan och helikopter, och att minikartan visar trafik på rätt plats.
 - **Provkört i riktigt fönster** med skärmdumpar: startskärm, start på bana i cockpit, jaktvy med ringar och utmärkelse, karta, paus, fotoläge med sparat foto och repris.
+
+#### 8m – Fyrar och flygledartorn som modeller ✅
+
+Fyrarna såg platta ut på nära håll, precis som hangarerna gjorde före 8i. Flygfälten fick också ett flygledartorn, och en utmärkelse för att flyga tätt förbi det.
+
+**Resultat:**
+
+- **Runda byggnader** (`lathe` i [render/mesh.py](src/flightsim/render/mesh.py)) byggs av ringar av hörn (åtta runt om) på olika höjd:
+  - Ett band mellan två ringar blir en vägg.
+  - En ring på samma höjd som den förra blir en avsats, som vänds nedåt eller uppåt beroende på om den går ut eller in.
+  - En ring med radie 0 blir en spets.
+- **Fyren** ([render/buildings.py](src/flightsim/render/buildings.py)) är 22 hög som bilden:
+  - Ett avsmalnande torn i fem vita och röda band, en balkong, en glaslykta och ett rött spetsigt tak.
+  - Lampan sitter mitt i lyktan, 19,4 upp, för både modell och bild. Bilden fick ett rött tak överst, så att bytet mellan dem syns mindre.
+  - Fyrens lampor ritas nu efter modellerna, så att modellen inte döljer sin egen lampa.
+- **Flygledartornet** står på hangarens sida av banan, en fjärdedel in från ena änden och 38 från mittlinjen, där träd och hus aldrig växer.
+  - Det är 19 högt: en vit stam och en hytt med mörkt glas som lutar utåt, under ett platt tak.
+  - På avstånd är det en bild (`TOWER` i [render/sprites.py](src/flightsim/render/sprites.py)), på nära håll en modell.
+  - Man kraschar i det: *HIT THE CONTROL TOWER* (`tower_hit` i [terrain/airfields.py](src/flightsim/terrain/airfields.py), med stammen och den bredare hytten).
+- **Solida hangarer:** man kraschar nu i hangarerna också, *HIT A HANGAR*.
+  - Formen (`hangar_hit`) är raka väggar under ett välvt tak, som modellen.
+  - Hangarens mått ligger i [terrain/airfields.py](src/flightsim/terrain/airfields.py) bredvid tornets, så att kollision och modell inte kan glida isär.
+  - Den öppna porten är bara målad: hangaren är solid hela vägen.
+- **Modell eller bild:** hangarer, torn och fyrar delas upp på samma sätt (`split_models`) och sorteras tillsammans med broarna efter avstånd.
+  - Smala byggnader byter till modell efter sin höjd, inte sin bredd. Annars hade en fyr varit en bild ända tills den var mycket nära.
+- **BUZZING THE TOWER:** en passage närmare än 30 från hyttens mitt, i minst 60 fart, ger *BUZZED THE TOWER!* och utmärkelsen. Det blir 32 totalt.
+  - Den mäts mellan bildrutorna som en nära passage med trafik ([sim/flyby.py](src/flightsim/sim/flyby.py)) och räknas när planet är på väg bort igen.
+  - Samma torn räknas igen först efter att planet varit mer än 150 bort.
+  - En landning eller start på banan passerar ~40 från hytten och räknas inte.
+- **Tester:** 10 nya (totalt 348):
+  - Fyren och tornet visar sidorna som vetter mot kameran och taket uppifrån, och avsatserna vänds rätt.
+  - Måtten stämmer med bilderna och kollisionen, och modellerna ritas.
+  - Tornet står bredvid banan och fritt från hangaren. Tornet och hangaren är solida där de syns.
+  - En snabb, nära passage räknas en gång per varv. En långsam eller avlägsen räknas inte, och en mycket snabb fångas mellan bildrutorna.
+- **Provkört i riktigt fönster:** en passage 12 från hytten på fält 389 i 113 fart gav *BUZZED THE TOWER!* och utmärkelsen. En flygning förbi närmaste fyr i skymning visade fyren som bild på avstånd och som modell närmare.
 ---
 
 #### Ordning och beroenden (fas 8)
@@ -1496,6 +1532,7 @@ Målet är skarp text och skarpa instrument i den nya upplösningen, med samma u
 | 8j Helikoptrar | Stor | 8c, 8d, 8i | Ett annat sätt att flyga: sväva, landa var som helst |
 | 8k Blandad upplösning: världen | Medel–stor | 8i | Skarpa modeller, broar, träd och effekter över dagens terräng |
 | 8l Blandad upplösning: HUD och menyer | Medel | 8k | Skarp text och instrument, plats för mer information |
+| 8m Fyrar och flygledartorn | Liten–medel | 8i, 8h | Byggnader som håller nära håll, ett nytt mål vid flygfälten |
 
 8e hänger inte ihop med de andra och kan göras när som helst. Det är lättare att göra den före 8g, eftersom trafikens rutter då tar hänsyn till floddalarna från början. 8f bygger direkt på floderna och ger utmärkelserna (8h) fler mål. 8i bygger på broarnas ritning och ersätter spritesen från 8a och 8d där planen syns stora. 8j bygger på typerna (8d), bränslet (8c) och modellerna (8i). 8k bör göras före 8l: när världens överlägg ritas i hög upplösning syns det direkt vad HUD:en behöver.
 

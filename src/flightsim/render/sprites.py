@@ -124,6 +124,26 @@ HANGAR = [
     ".kkkkkkkkkkkkkkkkkkkkkk.",
 ]
 
+# A control tower: dark glass cab with a flat roof on a white shaft.
+TOWER = [
+    "kkkkkkkkk",
+    "knlnnnlnk",
+    "knnnnnnnk",
+    ".kgggggk.",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+    "..kwwgk..",
+]
+
 # A windsock on its pole.
 WINDSOCK = [
     "kowowo..",
@@ -381,7 +401,7 @@ HOUSE = [
 ]
 
 LIGHTHOUSE = [
-    "..yy..",
+    "..Rr..",
     ".kyyk.",
     ".kkkk.",
     "..SS..",

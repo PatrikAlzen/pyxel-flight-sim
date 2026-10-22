@@ -175,6 +175,7 @@ def test_each_achievement_only_once():
         (Event(EventKind.CRASH, UP, "HIT A TREE"), []),
         (Event(EventKind.BRIDGE, UP, "UNDER NORBERG BRIDGE!"), ["UNDER_BRIDGE"]),
         (Event(EventKind.NEAR_MISS, UP, "NEAR MISS!"), ["NEAR_MISS"]),
+        (Event(EventKind.TOWER, UP, "BUZZED THE TOWER!"), ["BUZZ_TOWER"]),
     ],
 )
 def test_events(event, expected):

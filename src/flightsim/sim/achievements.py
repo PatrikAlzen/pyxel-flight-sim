@@ -71,6 +71,9 @@ ACHIEVEMENTS = [
     Achievement("UNDER_BRIDGE", "UNDER THE BRIDGE", "Fly under a bridge"),
     Achievement("BRIDGES_5", "BRIDGE TROLL", "Fly under 5 different bridges"),
     Achievement("NEAR_MISS", "TOO CLOSE", "Pass within 30 of another aircraft"),
+    Achievement(
+        "BUZZ_TOWER", "BUZZING THE TOWER", "Pass within 30 of a control tower over 60"
+    ),
     Achievement("PHOTOGRAPHER", "PHOTOGRAPHER", "Take 10 photos"),
     # Helicopters.
     Achievement("HOVER", "STEADY HANDS", "Hover a helicopter for 30 s below 10"),
@@ -298,6 +301,8 @@ class Tracker:
                 new += self._earn("UNDER_BRIDGE")
             case EventKind.NEAR_MISS:
                 new += self._earn("NEAR_MISS")
+            case EventKind.TOWER:
+                new += self._earn("BUZZ_TOWER")
         return new
 
     def landed_at(self, field_number: int, crosswind: float) -> list[str]:

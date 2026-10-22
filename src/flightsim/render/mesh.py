@@ -287,6 +287,61 @@ def prism(profile, depth: float, ramp, ends=None, y: float = 0.0) -> Mesh:
     return Mesh.build(vertices, wound, ramps)
 
 
+def lathe(rings, sides: int, ramps, top=None) -> Mesh:
+    """An upright round shape (``sides`` corners round) through ``rings`` of
+    (height, radius) from the bottom up: band ``i`` runs from ring ``i`` to the
+    next in ``ramps[i]``. A ring at the same height as the one before is a
+    ledge (an overhang or a step in), a last ring of radius 0 a point, and
+    ``top`` the ramp of a flat lid on the last ring. The bottom is left open:
+    it stands in the ground."""
+    angles = (np.arange(sides) + 0.5) * math.tau / sides
+    vertices, starts = [], []
+    for z, r in rings:
+        starts.append(len(vertices))
+        if r == 0:
+            vertices.append((0.0, 0.0, z))
+        else:
+            vertices += [(r * math.cos(a), r * math.sin(a), z) for a in angles]
+    vertices = np.array(vertices)
+    faces, face_ramps, inside = [], [], []
+
+    def corner(ring: int, k: int) -> int:
+        return starts[ring] + (0 if rings[ring][1] == 0 else k % sides)
+
+    for i in range(len(rings) - 1):
+        (z0, r0), (z1, r1) = rings[i], rings[i + 1]
+        # A point inside the shape near the band, for turning faces outwards:
+        # a ledge growing outwards faces down, one stepping in faces up.
+        if z0 == z1:
+            ref = (0.0, 0.0, z0 + (1.0 if r1 > r0 else -1.0))
+        else:
+            ref = (0.0, 0.0, (z0 + z1) / 2)
+        for k in range(sides):
+            a, b = corner(i, k), corner(i, k + 1)
+            c, d = corner(i + 1, k + 1), corner(i + 1, k)
+            faces.append((a, b, c, d) if c != d else (a, b, c, c))
+            face_ramps.append(ramps[i])
+            inside.append(ref)
+    if top is not None and rings[-1][1] > 0:
+        z = rings[-1][0]
+        for k in range(1, sides - 1):
+            last = len(rings) - 1
+            faces.append(
+                (
+                    corner(last, 0),
+                    corner(last, k),
+                    corner(last, k + 1),
+                    corner(last, k + 1),
+                )
+            )
+            face_ramps.append(top)
+            inside.append((0.0, 0.0, z - 1.0))
+    wound = [
+        _outwards(vertices, face, np.array(ref)) for face, ref in zip(faces, inside)
+    ]
+    return Mesh.build(vertices, wound, face_ramps)
+
+
 def place(
     mesh: Mesh, position: np.ndarray, forward: np.ndarray, up: np.ndarray
 ) -> np.ndarray:

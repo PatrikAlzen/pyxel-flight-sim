@@ -18,6 +18,7 @@ class EventKind(Enum):
     RING = "RING"
     BRIDGE = "BRIDGE"  # flew under one
     NEAR_MISS = "NEAR_MISS"  # passed very close to another aircraft
+    TOWER = "TOWER"  # flew fast and close past a control tower
 
 
 @dataclass(frozen=True)

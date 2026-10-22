@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum, auto
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -39,11 +40,16 @@ from flightsim.persist import Place, Profile, SaveStore, WorldSave
 from flightsim.render import canvas, palette
 from flightsim.render.bridges import draw_bridges
 from flightsim.render.buildings import (
+    LIGHTHOUSE_FOOT,
+    LIGHTHOUSE_LAMP,
     door_facing,
     draw_hangar,
     draw_helipad,
+    draw_round,
     hangar_mesh,
     helipad_mesh,
+    lighthouse_mesh,
+    tower_mesh,
 )
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
@@ -80,6 +86,7 @@ from flightsim.render.sprites import (
     LIGHTHOUSE,
     SNOWY_SPRUCE,
     SPRUCE,
+    TOWER,
     TRANSPARENT,
     WINDSOCK,
     WORLD_COLORS,
@@ -100,6 +107,7 @@ from flightsim.sim.aircraft import Aircraft, FlightState
 from flightsim.sim.camera import Camera
 from flightsim.sim.chase import ChaseCamera
 from flightsim.sim.events import EventKind, EventLog
+from flightsim.sim.flyby import Flybys
 from flightsim.sim.freecam import FreeCamera, FreeMode, look_at
 from flightsim.sim.particles import Particles
 from flightsim.sim.planes import (
@@ -123,9 +131,15 @@ from flightsim.sim.traffic import Flight, Traffic, closest_approach, midair
 from flightsim.sim.weather import PRESETS, Weather, turbulence_intensity
 from flightsim.sim.wrecks import Wrecks
 from flightsim.terrain.airfields import (
+    HANGAR_WIDTH,
+    TOWER_CAB_MIDDLE,
+    TOWER_CAB_RADIUS,
+    TOWER_HEIGHT,
     Airfield,
+    hangar_hit,
     landing_quality,
     landing_report,
+    tower_hit,
     water_landing_report,
 )
 from flightsim.terrain.bridges import Bridge
@@ -282,6 +296,7 @@ class App:
         self.traffic: Traffic | None = None
         self.flights: list[Flight] = []  # other aircraft near the camera now
         self.near_misses: set[tuple] = set()  # flights already reported
+        self.flybys = Flybys()  # close passes by control towers
         self.closest: dict[tuple, float] = {}  # nearest each flight has come
         self.flights_before: dict[tuple, np.ndarray] = {}  # positions a frame ago
         self.replay_plane = Aircraft()  # posed from the recording each frame
@@ -325,9 +340,12 @@ class App:
             for t in TYPES
         ]
         self.helipad_model = None  # built once the world gives the pad size
-        self.hangar_model = hangar_mesh(config.HANGAR_WIDTH)
+        self.hangar_model = hangar_mesh(HANGAR_WIDTH)
+        self.tower_model = tower_mesh()
+        self.lighthouse_model = lighthouse_mesh()
         self.prop_sprites = {
-            "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
+            "hangar": (make_image(HANGAR), HANGAR_WIDTH),
+            "tower": (make_image(TOWER), config.TOWER_WIDTH),
             # Blowing right and, mirrored, left as seen from the camera.
             "windsock": (
                 [make_image(WINDSOCK), make_image([r[::-1] for r in WINDSOCK])],
@@ -444,6 +462,7 @@ class App:
         self.traffic = Traffic(self.seed, self.world.generator, len(PLANES))
         self.flights = []
         self.near_misses.clear()
+        self.flybys.clear()
         self.closest.clear()
         self.saved = self.store.load(self.seed)
         for wreck in self.saved.wrecks:
@@ -1213,6 +1232,7 @@ class App:
                 start, np.array([plane.x, plane.y, plane.altitude])
             )
             self.check_traffic(start)
+            self.check_tower_flybys(start)
         if self.race and plane.state is not FlightState.CRASHED:
             end = np.array([plane.x, plane.y, plane.altitude])
             passed = self.race.update(DT, start, end, moving=plane.speed > 2.0)
@@ -1240,6 +1260,42 @@ class App:
             if bridge.hit(plane.x, plane.y, plane.altitude):
                 plane.crash("HIT A BRIDGE")
                 return
+        for field in self.world.generator.airfields.overlapping(
+            plane.x - HANGAR_WIDTH, plane.y - HANGAR_WIDTH,
+            plane.x + HANGAR_WIDTH, plane.y + HANGAR_WIDTH,
+        ):  # fmt: skip
+            x, y, z = self.props_of(field)["hangar"][0]
+            (ax, ay), (cx, cy) = field.along, field.across
+            dx, dy = plane.x - x, plane.y - y
+            if hangar_hit(dx * ax + dy * ay, dx * cx + dy * cy, bottom - z):
+                plane.crash("HIT A HANGAR")
+                return
+        for x, y, z in self.towers_near(plane.x, plane.y, config.COLLISION_SEARCH):
+            if tower_hit(plane.x - x, plane.y - y, bottom - z):
+                plane.crash("HIT THE CONTROL TOWER")
+                return
+
+    def towers_near(self, x: float, y: float, radius: float) -> list[np.ndarray]:
+        """Foot of each control tower within ``radius`` of (x, y)."""
+        fields = self.world.generator.airfields.overlapping(
+            x - radius, y - radius, x + radius, y + radius
+        )
+        towers = [self.props_of(field)["tower"][0] for field in fields]
+        return [t for t in towers if math.hypot(t[0] - x, t[1] - y) <= radius]
+
+    def check_tower_flybys(self, start: np.ndarray) -> None:
+        """Fast and close past a control tower: buzzing the tower."""
+        plane = self.aircraft
+        if plane.state is not FlightState.FLYING:
+            return
+        here = np.array([plane.x, plane.y, plane.altitude])
+        for foot in self.towers_near(plane.x, plane.y, config.TOWER_SEARCH):
+            cab = foot + np.array([0.0, 0.0, TOWER_CAB_MIDDLE])
+            key = (round(foot[0]), round(foot[1]))
+            if self.flybys.update(key, start, here, cab, plane.speed):
+                self.audio.ring_passed()
+                self.events.emit(EventKind.TOWER, here, "BUZZED THE TOWER!")
+                self.show_toast("BUZZED THE TOWER!")
 
     def bridges_near(self, x: float, y: float, radius: float) -> list[Bridge]:
         return self.world.generator.bridges.near(x, y, radius)
@@ -1771,23 +1827,36 @@ class App:
         scale_onto_screen(self.terrain_pixels)
         draw_particles(self.particles, self.camera, self.view)
         self.draw_helipads()
-        hangars = self.draw_airfield_props()
+        # Buildings close enough to be models: (distance, a function drawing it).
+        models = self.draw_airfield_props()
+        lights = self.lighthouses_near(config.LIGHTHOUSE_DRAW_DISTANCE)
+        positions = np.array([[t.x, t.y, t.z] for t in lights]).reshape(-1, 3)
+        pictured = self.split_models(
+            positions,
+            HEIGHT[Kind.LIGHTHOUSE],
+            LIGHTHOUSE_FOOT,
+            models,
+            partial(draw_round, self.lighthouse_model),
+        )
+        far_lights = [light for light, far in zip(lights, pictured) if far]
         bridges = self.bridges_near(
             self.camera.x, self.camera.y, config.BRIDGE_DRAW_DISTANCE
         )
-        # Trees and houses beyond the nearest bridge or hangar model are drawn
-        # before them, nearer ones after.
+        # Trees and houses beyond the nearest bridge or building model are
+        # drawn before them, nearer ones after.
         split = min(
             self.nearest_bridge_distance(bridges),
-            min((d for d, _, _ in hangars), default=math.inf),
+            min((d for d, _ in models), default=math.inf),
         )
-        self.draw_objects(beyond=split)
+        self.draw_objects(far_lights, beyond=split)
         if bridges:
             draw_bridges(bridges, self.camera, self.view, config.BRIDGE_DRAW_DISTANCE)
-        for _, position, facing in sorted(hangars, key=lambda h: -h[0]):
-            draw_hangar(self.hangar_model, position, facing, self.camera, self.view)
-        if bridges or hangars:
-            self.draw_objects(within=split)
+        for _, draw in sorted(models, key=lambda m: -m[0]):
+            draw(self.camera, self.view)
+        if bridges or models:
+            self.draw_objects(far_lights, within=split)
+        if palette.LIGHTINGS[self.lighting] is not palette.DAY:
+            self.draw_lighthouse_lamps(lights)  # over the lighthouse models
         nearby, kinds = self.wrecks.near_with_kinds(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
         )
@@ -1949,8 +2018,10 @@ class App:
             nearest = min(nearest, math.hypot(along, across))
         return nearest
 
-    def draw_objects(self, beyond: float = 0.0, within: float = math.inf) -> None:
-        """Trees and houses near the camera, and lighthouses further out: those
+    def draw_objects(
+        self, lights: list[Lighthouse], beyond: float = 0.0, within: float = math.inf
+    ) -> None:
+        """Trees and houses near the camera, and ``lights`` further out: those
         more than ``beyond`` and at most ``within`` away (horizontally), so
         objects on both sides of a bridge can be drawn before and after it."""
         cam = self.camera
@@ -1959,7 +2030,6 @@ class App:
         )
         near = self.world.objects_near(cam.x, cam.y, reach)
         near = near.select(near.kind != Kind.LIGHTHOUSE)  # drawn below, further out
-        lights = self.lighthouses_near(config.LIGHTHOUSE_DRAW_DISTANCE)
         if lights:
             towers = Objects(
                 np.array([[t.x, t.y, t.z] for t in lights], dtype=np.float32),
@@ -1982,16 +2052,12 @@ class App:
             scales=near.scale,
             limit=config.OBJECT_LIMIT,
         )
-        if within == math.inf and palette.LIGHTINGS[self.lighting] is not palette.DAY:
-            self.draw_lighthouse_lamps(lights)
 
     def draw_lighthouse_lamps(self, lights: list[Lighthouse]) -> None:
         """Blinking lamps, visible from far away at dusk and night."""
         if not lights or self.time % config.LAMP_PERIOD > config.LAMP_ON:
             return
-        lamps = np.array(
-            [[t.x, t.y, t.z + HEIGHT[Kind.LIGHTHOUSE] * 0.93] for t in lights]
-        )
+        lamps = np.array([[t.x, t.y, t.z + LIGHTHOUSE_LAMP] for t in lights])
         sx, sy, depth = project_points(self.camera, lamps, self.view.focal, W, H)
         seen = (depth > 1.0) & (sx >= 0) & (sx < W) & (sy >= 0) & (sy < H)
         seen &= in_front_of_terrain(self.view, self.camera, lamps, sx, sy)
@@ -2010,23 +2076,43 @@ class App:
         for pad in pads:
             draw_helipad(self.helipad_model, pad, cam, self.view)
 
-    def draw_airfield_props(self) -> list[tuple[float, np.ndarray, np.ndarray]]:
-        """Hangars and windsocks at the airfields around the camera, as pictures.
-        Hangars close enough to look flat are left out and returned instead, as
-        (distance to their nearest wall, position, way the door faces), to be
-        drawn as models."""
+    def draw_airfield_props(self) -> list[tuple[float, Callable]]:
+        """Hangars, control towers and windsocks at the airfields around the
+        camera, as pictures. Buildings close enough to look flat are left out
+        and returned instead, as (distance to their nearest wall, a function
+        drawing the model), to be drawn among the other models."""
         cam = self.camera
         r = config.PROP_DRAW_DISTANCE
         fields = self.world.generator.airfields.overlapping(
             cam.x - r, cam.y - r, cam.x + r, cam.y + r
         )
-        models = []
+        models: list[tuple[float, Callable]] = []
         for field in fields:
             for kind, positions in self.props_of(field).items():
                 if kind == "hangar":
-                    positions = self.split_hangars(field, positions, models)
-                    if not len(positions):
-                        continue
+                    pictured = np.ones(len(positions), dtype=bool)
+                    for i, position in enumerate(positions):
+                        _, side = field.local(position[0], position[1])
+                        facing = door_facing(field.across, float(side))
+                        pictured[i] = self.split_models(
+                            positions[i : i + 1],
+                            HANGAR_WIDTH,
+                            HANGAR_WIDTH / 2,
+                            models,
+                            partial(self.draw_hangar_at, facing),
+                        )[0]
+                    positions = positions[pictured]
+                elif kind == "tower":
+                    pictured = self.split_models(
+                        positions,
+                        TOWER_HEIGHT,
+                        TOWER_CAB_RADIUS,
+                        models,
+                        partial(draw_round, self.tower_model),
+                    )
+                    positions = positions[pictured]
+                if not len(positions):
+                    continue
                 sprite, width = self.prop_sprites[kind]
                 variants = None
                 if kind == "windsock":
@@ -2047,26 +2133,34 @@ class App:
                 )
         return models
 
-    def split_hangars(
-        self, field: Airfield, positions: np.ndarray, models: list
+    def draw_hangar_at(
+        self, facing: np.ndarray, position: np.ndarray, camera, renderer
+    ) -> None:
+        draw_hangar(self.hangar_model, position, facing, camera, renderer)
+
+    def split_models(
+        self,
+        positions: np.ndarray,
+        size: float,
+        radius: float,
+        models: list,
+        draw: Callable,
     ) -> np.ndarray:
-        """The hangars to draw as pictures; the near ones go into ``models``."""
+        """Which buildings at ``positions`` (``size`` at their largest) to draw
+        as pictures; the near ones go into ``models`` as (distance to their
+        nearest wall, ``radius`` in from their middle; ``draw`` with the
+        position bound), and are False here."""
         cam = self.camera
         f, _, _ = cam.basis()
-        far = []
-        for position in positions:
+        pictured = np.ones(len(positions), dtype=bool)
+        for i, position in enumerate(positions):
             depth = float((position - np.array(cam.position)) @ f)
-            wide = depth <= 0 or as_model(
-                config.HANGAR_WIDTH * self.view.focal / depth, self.view
-            )
-            if not wide:
-                far.append(position)
+            if depth > 0 and not as_model(size * self.view.focal / depth, self.view):
                 continue
-            _, side = field.local(position[0], position[1])
-            facing = door_facing(field.across, float(side))
+            pictured[i] = False
             away = math.hypot(position[0] - cam.x, position[1] - cam.y)
-            models.append((max(away - config.HANGAR_WIDTH / 2, 0.0), position, facing))
-        return np.array(far).reshape(-1, 3)
+            models.append((max(away - radius, 0.0), partial(draw, position)))
+        return pictured
 
     def props_of(self, field: Airfield) -> dict[str, np.ndarray]:
         """World positions of a field's buildings, on the ground (computed once)."""

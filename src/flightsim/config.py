@@ -46,7 +46,7 @@ PLACE_MIN_CLEARANCE = 20.0  # a saved place never drops the plane closer to the 
 FIELD_SEARCH_RINGS = 3  # cells searched around the plane for the nearest field
 RUNWAY_START_OFFSET = 20.0  # starting on a runway: this far in from its end
 PROP_DRAW_DISTANCE = 900.0  # hangars and windsocks further away are not drawn
-HANGAR_WIDTH = 36.0  # world units
+TOWER_WIDTH = 11.0  # the control tower's cab, roof included
 WINDSOCK_WIDTH = 4.0
 OVERCAST_STEPS = 8  # palette rebuilds as the sky greys over
 TURBULENCE_PROBE = 20.0  # how far around the plane the ground slope is measured
@@ -84,6 +84,7 @@ BRIDGE_SEARCH = 200.0  # bridges this close are checked for collisions and passe
 # Traffic.
 MIDAIR_DISTANCE = 0.7  # of the two planes' half-spans added: a collision
 NEAR_MISS_DISTANCE = 30.0  # closer than this without colliding: a near miss
+TOWER_SEARCH = 300.0  # control towers within this are checked for crashes and fly-bys
 
 # Achievements.
 AWARD_SECONDS = 3.0  # each new achievement is announced this long
