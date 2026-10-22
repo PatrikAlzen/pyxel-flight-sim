@@ -115,12 +115,12 @@ HANGAR = [
     "...kkgggggwwwwgggggkk...",
     "..kgggggggggggggggggggk.",
     ".kggggggggggggggggggggk.",
-    ".kgggkkkkkkkkkkkkkkgggk.",
-    ".kgggknnnnnnnnnnnnkgggk.",
-    ".kgggknnnnnnnnnnnnkgggk.",
-    ".kgggknnnnnnnnnnnnkgggk.",
-    ".kgggknnnnnnnnnnnnkgggk.",
-    ".kgggknnnnnnnnnnnnkgggk.",
+    ".kggggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
+    ".kggggggggggggggggggggk.",
     ".kkkkkkkkkkkkkkkkkkkkkk.",
 ]
 
