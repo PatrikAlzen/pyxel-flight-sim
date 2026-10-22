@@ -36,6 +36,7 @@ from flightsim.controls import Action, flight_controls, pressed
 from flightsim.persist import Place, Profile, SaveStore, WorldSave
 from flightsim.render import palette
 from flightsim.render.bridges import draw_bridges
+from flightsim.render.buildings import door_facing, draw_hangar, hangar_mesh
 from flightsim.render.clouds import CloudLayer
 from flightsim.render.effects import (
     WRECK_FULL_SIZE_DISTANCE,
@@ -280,6 +281,7 @@ class App:
             }
             for t in TYPES
         ]
+        self.hangar_model = hangar_mesh(config.HANGAR_WIDTH)
         self.prop_sprites = {
             "hangar": (make_image(HANGAR), config.HANGAR_WIDTH),
             # Blowing right and, mirrored, left as seen from the camera.
@@ -1625,16 +1627,24 @@ class App:
         )
         self.render_time.add(time.perf_counter() - start)
         draw_particles(self.particles, self.camera, self.renderer)
-        self.draw_airfield_props()
+        hangars = self.draw_airfield_props()
         bridges = self.bridges_near(
             self.camera.x, self.camera.y, config.BRIDGE_DRAW_DISTANCE
         )
-        split = self.nearest_bridge_distance(bridges)
+        # Trees and houses beyond the nearest bridge or hangar model are drawn
+        # before them, nearer ones after.
+        split = min(
+            self.nearest_bridge_distance(bridges),
+            min((d for d, _, _ in hangars), default=math.inf),
+        )
         self.draw_objects(beyond=split)
         if bridges:
             draw_bridges(
                 bridges, self.camera, self.renderer, config.BRIDGE_DRAW_DISTANCE
             )
+        for _, position, facing in sorted(hangars, key=lambda h: -h[0]):
+            draw_hangar(self.hangar_model, position, facing, self.camera, self.renderer)
+        if bridges or hangars:
             self.draw_objects(within=split)
         nearby, kinds = self.wrecks.near_with_kinds(
             self.camera.x, self.camera.y, config.WRECK_DRAW_DISTANCE
@@ -1847,15 +1857,23 @@ class App:
             pyxel.circ(x, y, 1, pyxel.COLOR_YELLOW)
             pyxel.pset(x, y, pyxel.COLOR_WHITE)
 
-    def draw_airfield_props(self) -> None:
-        """Hangars and windsocks at the airfields around the camera."""
+    def draw_airfield_props(self) -> list[tuple[float, np.ndarray, np.ndarray]]:
+        """Hangars and windsocks at the airfields around the camera, as pictures.
+        Hangars close enough to look flat are left out and returned instead, as
+        (distance to their nearest wall, position, way the door faces), to be
+        drawn as models."""
         cam = self.camera
         r = config.PROP_DRAW_DISTANCE
         fields = self.world.generator.airfields.overlapping(
             cam.x - r, cam.y - r, cam.x + r, cam.y + r
         )
+        models = []
         for field in fields:
             for kind, positions in self.props_of(field).items():
+                if kind == "hangar":
+                    positions = self.split_hangars(field, positions, models)
+                    if not len(positions):
+                        continue
                 sprite, width = self.prop_sprites[kind]
                 variants = None
                 if kind == "windsock":
@@ -1874,6 +1892,29 @@ class App:
                     full,
                     variants=variants,
                 )
+        return models
+
+    def split_hangars(
+        self, field: Airfield, positions: np.ndarray, models: list
+    ) -> np.ndarray:
+        """The hangars to draw as pictures; the near ones go into ``models``."""
+        cam = self.camera
+        f, _, _ = cam.basis()
+        far = []
+        for position in positions:
+            depth = float((position - np.array(cam.position)) @ f)
+            wide = (
+                depth <= 0
+                or config.HANGAR_WIDTH * self.renderer.focal / depth >= LOD_PIXELS
+            )
+            if not wide:
+                far.append(position)
+                continue
+            _, side = field.local(position[0], position[1])
+            facing = door_facing(field.across, float(side))
+            away = math.hypot(position[0] - cam.x, position[1] - cam.y)
+            models.append((max(away - config.HANGAR_WIDTH / 2, 0.0), position, facing))
+        return np.array(far).reshape(-1, 3)
 
     def props_of(self, field: Airfield) -> dict[str, np.ndarray]:
         """World positions of a field's buildings, on the ground (computed once)."""

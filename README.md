@@ -259,6 +259,7 @@ pyxel-flight-sim/
 │       │   ├── bridges.py     # broar i 3D: lådor klippta mot kameran, dimma, räcken
 │       │   ├── mesh.py        # 3D-modeller: placering, skuggning, kontur, klippning
 │       │   ├── models.py      # flygplanens och vrakens modeller, modell eller sprite
+│       │   ├── buildings.py   # hangarer som 3D-modeller med port mot banan
 │       │   └── worldmap.py    # stor karta och startskärmens förhandsvisning
 │       ├── sim/
 │       │   ├── aircraft.py    # flygmodell
@@ -1254,6 +1255,14 @@ Målet är att planen ska ha riktig form från alla håll i jaktvyn, fotoläget,
 - **Inte gjort:**
   - Roder som rör sig med spaken, skugga på marken och kabinram i cockpitvyn.
   - Modellerna och broarna sorteras inte mot varandra, så modellen ritas alltid ovanpå en bro.
+- **Efteråt: hangarer i 3D** ([render/buildings.py](src/flightsim/render/buildings.py)). En hangar som bild vred sig mot kameran och såg märklig ut på nära håll.
+  - Nu är hangarer som blir minst 16 pixlar breda (inom ~290 enheter) modeller: grå väggar under ett välvt tak av ljus plåt i sex segment och en mörk port mot banan. Längre bort är de bilder som förut.
+  - Hangaren är ett **prisma**, en ny byggsten i `mesh.py`: en konvex profil som sträcks ut, med en ramp per sida och ytorna vända utåt av sig själva.
+  - Porten är en enkelsidig yta som ritas efter byggnaden, så den syns bara framifrån och aldrig genom väggen.
+  - Byggnaden sticker 3 enheter ned i marken, så en sluttning under den inte lämnar en springa.
+  - Träd och hus bortom närmaste hangarmodell (eller bro) ritas före den och de närmare efter.
+  - 2 nya tester (totalt 295): att prismats ytor pekar utåt, och att porten vetter mot banan och bara syns framifrån.
+  - Provkört i fönstret från fem håll: framifrån, snett från sidan, bakifrån, ovanifrån och nära marken. Vindstruten är fortfarande en bild.
 
 ---
 

@@ -179,6 +179,42 @@ def box(centre, half, ramp, front=1.0, top=1.0) -> Mesh:
     return Mesh.build(v + np.asarray(centre, float), _BOX_FACES, [ramp] * 6)
 
 
+def _outwards(vertices: np.ndarray, face: tuple, centre: np.ndarray) -> tuple:
+    """``face`` wound so its normal points away from ``centre`` (a convex shape)."""
+    a, b, c = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+    if np.cross(b - a, c - a) @ ((a + b + c) / 3 - centre) >= 0:
+        return face
+    if face[2] == face[3]:  # a triangle: (a, b, c, c) becomes (c, b, a, a)
+        return (face[2], face[1], face[0], face[0])
+    return face[::-1]
+
+
+def prism(profile, depth: float, ramp, ends=None, y: float = 0.0) -> Mesh:
+    """A convex ``profile`` of (x, z) points stretched ``depth`` along y (centred
+    on ``y``): sides in ``ramp`` (or a ramp per side, side ``i`` running from
+    point ``i`` to the next), the two end faces in ``ends`` (default the first
+    side's). Faces are wound to face outwards whatever order the profile is in."""
+    sides = list(ramp) if isinstance(ramp, (list, tuple)) else [ramp] * len(profile)
+    ends = sides[0] if ends is None else ends
+    profile = [(float(x), float(z)) for x, z in profile]
+    n = len(profile)
+    back = [(x, y - depth / 2, z) for x, z in profile]
+    front = [(x, y + depth / 2, z) for x, z in profile]
+    vertices = np.array(back + front)
+    faces, ramps = [], []
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append((i, j, n + j, n + i))
+        ramps.append(sides[i])
+    for start in (0, n):  # the ends, as fans of triangles
+        for i in range(1, n - 1):
+            faces.append((start, start + i, start + i + 1, start + i + 1))
+            ramps.append(ends)
+    centre = vertices.mean(axis=0)
+    wound = [_outwards(vertices, face, centre) for face in faces]
+    return Mesh.build(vertices, wound, ramps)
+
+
 def place(
     mesh: Mesh, position: np.ndarray, forward: np.ndarray, up: np.ndarray
 ) -> np.ndarray:

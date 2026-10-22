@@ -129,3 +129,33 @@ def test_drawing_planes_is_quick(screen):
         draw(mesh, camera)
     ms = (time.perf_counter() - start) / 20 * 1000
     assert ms < 1.5, ms  # ~0.5 ms measured
+
+
+def test_prism_faces_point_outwards():
+    from flightsim.render.buildings import hangar_mesh
+
+    shell, _ = hangar_mesh(36.0)
+    corners = shell.vertices[shell.faces]
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    outward = corners[:, :3].mean(axis=1) - shell.vertices.mean(axis=0)
+    assert np.all(np.einsum("fk,fk->f", normals, outward) > 0)
+
+
+def test_hangar_door_faces_the_runway_and_only_shows_from_the_front(screen):
+    from flightsim.render.buildings import door_facing, hangar_mesh
+    from flightsim.render.voxel import VoxelRenderer
+
+    across = (1.0, 0.0)  # runway across east; a hangar east of it (+1) faces west
+    assert np.allclose(door_facing(across, 1.0), [-1.0, 0.0, 0.0])
+    assert np.allclose(door_facing(across, -2.0), [1.0, 0.0, 0.0])
+
+    shell, door = hangar_mesh(36.0)
+    renderer = VoxelRenderer(256, 144)
+    renderer.pixel_distance[:] = np.inf
+    facing = np.array([0.0, 1.0, 0.0])  # door to the south
+    ground = np.array([0.0, 0.0, 0.0])
+    in_front = Camera(x=0.0, y=60.0, altitude=8.0, heading=0.0)  # south, looking north
+    behind = Camera(x=0.0, y=-60.0, altitude=8.0, heading=math.pi)
+    assert draw_mesh(door, ground, facing, UP, in_front, renderer, outline=None) == 1
+    assert draw_mesh(door, ground, facing, UP, behind, renderer, outline=None) == 0
+    assert draw_mesh(shell, ground, facing, UP, behind, renderer) > 0
