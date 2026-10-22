@@ -21,7 +21,8 @@ from flightsim.render.framebuffer import screen_array
 from flightsim.terrain.biomes import Biome
 from flightsim.terrain.generator import TerrainGenerator, TerrainSample
 
-W, H = config.SCREEN_W, config.SCREEN_H
+# The game's terrain resolution: the map is a small debug window.
+W, H = config.SCREEN_W // config.TERRAIN_SCALE, config.SCREEN_H // config.TERRAIN_SCALE
 ZOOMS = [1, 2, 4, 8, 16, 32, 64]
 PAN_PIXELS = 4
 
@@ -61,7 +62,7 @@ class MapView:
             H,
             title=f"{config.TITLE} - map",
             fps=config.FPS,
-            display_scale=config.DISPLAY_SCALE,
+            display_scale=config.DISPLAY_SCALE * config.TERRAIN_SCALE,
         )
         palette.install()
         pyxel.mouse(True)

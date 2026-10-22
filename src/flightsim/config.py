@@ -4,10 +4,13 @@ import math
 
 TITLE = "Pyxel Flight Sim"
 
-# Internal render resolution (16:9). Pyxel scales the window up to fit the display.
-SCREEN_W = 256
-SCREEN_H = 144
-DISPLAY_SCALE = 4
+# Screen resolution (16:9). Pyxel scales the window up to fit the display. The
+# terrain is rendered TERRAIN_SCALE times smaller and scaled up; planes, rings,
+# buildings and effects are drawn at the full resolution over it.
+SCREEN_W = 768
+SCREEN_H = 432
+TERRAIN_SCALE = 3
+DISPLAY_SCALE = 2
 FPS = 30
 
 SEED = 1337
@@ -60,7 +63,7 @@ GHOST_CLEARANCE = 4.0  # minimum height above the ground
 
 # Photo mode.
 PHOTO_FOVS = (90.0, 70.0, 50.0, 35.0, 25.0)  # degrees, Z/X step through them
-PHOTO_SCALE = 3  # saved image is this many times the screen size
+PHOTO_SCALE = 1  # saved image is this many times the screen size
 PHOTO_FLASH = 0.2  # seconds of white after taking a photo
 
 # Replays.

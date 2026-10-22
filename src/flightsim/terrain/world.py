@@ -14,6 +14,7 @@ from multiprocessing.connection import Connection
 
 import numpy as np
 
+from flightsim.memory import keep_freed_memory
 from flightsim.terrain.generator import TerrainGenerator, TerrainSettings
 from flightsim.terrain.objects import Objects, place_objects
 
@@ -181,10 +182,15 @@ class TerrainLevel:
         fv = (v - v0).astype(np.float32)
         i0 = u0.astype(np.int64) & self.mask
         j0 = v0.astype(np.int64) & self.mask
-        i1, j1 = (i0 + 1) & self.mask, (j0 + 1) & self.mask
-        h = self.heights
-        top = h[j0, i0] + (h[j0, i1] - h[j0, i0]) * fu
-        bottom = h[j1, i0] + (h[j1, i1] - h[j1, i0]) * fu
+        i1 = (i0 + 1) & self.mask
+        # Flat indices with take: much faster than indexing rows and columns.
+        row0 = j0 * self.size
+        row1 = ((j0 + 1) & self.mask) * self.size
+        h = self.heights.ravel()
+        a, b = h.take(row0 + i0), h.take(row0 + i1)
+        c, d = h.take(row1 + i0), h.take(row1 + i1)
+        top = a + (b - a) * fu
+        bottom = c + (d - c) * fu
         return top + (bottom - top) * fv
 
 
@@ -336,6 +342,7 @@ def _work(
     quit can end the process without running Python's exit handlers), which
     shows up here as a closed pipe.
     """
+    keep_freed_memory()
     generator = TerrainGenerator(seed, settings)
     tiles = [(min(TILE, size), step) for size, step in levels]
     try:

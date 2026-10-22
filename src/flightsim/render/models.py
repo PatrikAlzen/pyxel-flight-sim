@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 import pyxel
 
-from flightsim.render.effects import draw_aircraft
+from flightsim.render.effects import draw_aircraft, pixel_scale
 from flightsim.render.mesh import Mesh, box, draw_mesh
 from flightsim.render.sprites import TRANSPARENT
 from flightsim.render.voxel import VoxelRenderer
@@ -35,7 +35,7 @@ from flightsim.sim.planes import (
 )
 from flightsim.terrain.biomes import Biome
 
-LOD_PIXELS = 16.0  # narrower than this on screen: the sprite instead
+LOD_PIXELS = 16.0  # narrower than this in terrain pixels: the sprite instead
 WRECK_TAIL_BEND = 0.45  # radians the tail is twisted aside in a crash
 
 # Sprite colour letters (see sprites._COLORS) as terrain ramps.
@@ -264,6 +264,13 @@ def plane_size(
     return math.inf if depth <= 0 else TYPES[kind].span * renderer.focal / depth
 
 
+def as_model(size: float, renderer: VoxelRenderer) -> bool:
+    """Whether something ``size`` pixels across is drawn as a 3D model rather
+    than a sprite. The limit is in terrain pixels, so drawing sharp over the
+    terrain does not mean drawing many more (costly) models."""
+    return size >= LOD_PIXELS * pixel_scale(renderer)
+
+
 def draw_plane(
     kind: int,
     sprites: dict[str, pyxel.Image],
@@ -276,7 +283,7 @@ def draw_plane(
 ) -> None:
     """Aircraft type ``kind``: the 3D model when it is big enough on screen,
     otherwise its sprites."""
-    if plane_size(kind, position, camera, renderer) < LOD_PIXELS:
+    if not as_model(plane_size(kind, position, camera, renderer), renderer):
         span = TYPES[kind].span
         draw_aircraft(
             sprites, TRANSPARENT, position, forward, up, camera, renderer, span
@@ -368,20 +375,20 @@ def showcase_pose(
 def draw_showcase(
     kind: int,
     angle: float,
-    frame: tuple[int, int, int, int],
+    origin: tuple[int, int],
     renderer: VoxelRenderer,
     propeller: float = 0.0,
 ) -> None:
-    """The model turning inside ``frame`` (x, y, w, h); ``renderer`` is the size
-    of the frame's inside, so the camera looks straight at the model."""
-    x0, y0, _, _ = frame
+    """The model turning in the rectangle with upper left corner ``origin``
+    and the size of ``renderer``, so the camera looks straight at the model."""
+    x0, y0 = origin
     mesh, position, forward, up, camera = showcase_pose(
         kind, angle, renderer, propeller
     )
     # Draw as if the frame's inside were the screen. The clip rectangle is in
     # screen coordinates and does not move with the camera.
-    pyxel.camera(-(x0 + 1), -(y0 + 1))
-    pyxel.clip(x0 + 1, y0 + 1, renderer.width, renderer.height)
+    pyxel.camera(-x0, -y0)
+    pyxel.clip(x0, y0, renderer.width, renderer.height)
     draw_mesh(mesh, position, forward, up, camera, renderer)
     pyxel.clip()
     pyxel.camera()

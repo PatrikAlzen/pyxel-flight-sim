@@ -11,7 +11,9 @@ import math
 import numpy as np
 import pyxel
 
-from flightsim.render.effects import in_front_of_terrain, project_points
+from flightsim.render import canvas
+from flightsim.render.effects import in_front_of_terrain, pixel_scale, project_points
+from flightsim.render.mesh import View, draw_line
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 from flightsim.sim.race import Race, Ring
@@ -28,15 +30,20 @@ def draw_ring(ring: Ring, color: int, camera: Camera, renderer: VoxelRenderer) -
     seen = (depth > 1.0) & in_front_of_terrain(renderer, camera, points, sx, sy)
     # Closer rings get a thicker outline so they read as solid hoops.
     centre_depth = float(np.mean(depth))
-    thick = centre_depth > 1.0 and ring.radius / centre_depth * renderer.focal > 18
+    pixel = pixel_scale(renderer)
+    thick = (
+        centre_depth > 1.0 and ring.radius / centre_depth * renderer.focal > 18 * pixel
+    )
+    width = pixel * (2 if thick else 1)  # in screen pixels
+    view = View(camera, renderer)  # for cutting lines that reach far off screen
     for i in range(len(points)):
         j = (i + 1) % len(points)
         if not (seen[i] and seen[j]):
             continue
-        pyxel.line(sx[i], sy[i], sx[j], sy[j], color)
-        if thick:
-            pyxel.line(sx[i] + 1, sy[i], sx[j] + 1, sy[j], color)
-            pyxel.line(sx[i], sy[i] + 1, sx[j], sy[j] + 1, color)
+        draw_line(view, sx[i], sy[i], sx[j], sy[j], color)
+        for k in range(1, width):
+            draw_line(view, sx[i] + k, sy[i], sx[j] + k, sy[j], color)
+            draw_line(view, sx[i], sy[i] + k, sx[j], sy[j] + k, color)
 
 
 def draw_rings(race: Race, camera: Camera, renderer: VoxelRenderer) -> None:
@@ -61,5 +68,5 @@ def draw_ring_arrow(ring: Ring, camera: Camera, renderer: VoxelRenderer) -> None
     back = angle + math.pi
     left = (x + math.cos(back + 0.6) * 5, y + math.sin(back + 0.6) * 5)
     right = (x + math.cos(back - 0.6) * 5, y + math.sin(back - 0.6) * 5)
-    pyxel.tri(*tip, *left, *right, NEXT_COLOR)
-    pyxel.trib(*tip, *left, *right, pyxel.COLOR_BLACK)
+    canvas.tri(*tip, *left, *right, NEXT_COLOR)
+    canvas.trib(*tip, *left, *right, pyxel.COLOR_BLACK)

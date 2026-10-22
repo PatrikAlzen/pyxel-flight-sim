@@ -2,7 +2,7 @@
 
 En retroinspirerad flygsimulator byggd med [Pyxel](https://github.com/kitao/pyxel). Världen är procedurellt genererad och i praktiken oändlig – flyg åt vilket håll du vill och ny terräng skapas när du kommer dit.
 
-> **Status:** fas 0–6, 7a–7e och 8a–8j klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8j är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller och helikoptrar med helikopterplattor. Nästa steg är 8k–8l: högre upplösning för allt utom terrängen.
+> **Status:** fas 0–6, 7a–7e och 8a–8k klara: en spelbar flygsimulator i en oändlig procedurell 3D-värld där man kan rolla och loopa hela varv, med flygfält, tidslopp, skogar, byar och fyrar, sparade platser, HUD, karta, ljud, moln, väder med vind, turbulens och regn, vågor, jaktkamera och dag/skymning/natt. 7f (webb) är överhoppad. Fas 8a–8k är klara: fotoläge, repriser, bränsle, flygplanstyper, floder, broar, trafik, utmärkelser, flygplan som 3D-modeller, helikoptrar med helikopterplattor och världen i 768 × 432 över en uppskalad terräng. Nästa steg är 8l: HUD och menyer i hög upplösning.
 
 ---
 
@@ -252,6 +252,7 @@ pyxel-flight-sim/
 │       ├── render/
 │       │   ├── palette.py     # palettdefinition och färgramper
 │       │   ├── voxel.py       # Voxel Space-renderare (NumPy) med himmel och dimma
+│       │   ├── canvas.py      # gränssnittets ritanrop: till skärmen eller till lagret som skalas upp
 │       │   ├── clouds.py      # molnlager med täckning och höjd från vädret, driver med vinden
 │       │   ├── rain.py        # regndroppar i en låda runt kameran, ritade som rörelsestreck
 │       │   ├── sprites.py     # pixelgrafik som text (flygplanet)
@@ -1410,6 +1411,37 @@ Målet är att allt som ritas ovanpå terrängen ritas i full upplösning, så a
 **Tester:** att uppskalad terräng och överlägg hamnar på samma ställe (en punkt på marken projiceras till samma skärmpixel i båda upplösningarna, avrundat till skalan), att skymningstesterna fungerar i den höga upplösningen (befintliga tester för träd bakom kullar, broar i moln och modeller bakom terräng, i ny upplösning), att varje modell och bild har samma storlek på skärmen i förhållande till terrängen som i dag, och att en bildruta med terräng, 600 träd och två modeller håller sig inom budgeten.
 
 **Risk:** att något överlägg glöms bort och hamnar i fel skala eller på fel ställe. Det mildras genom att låta *all* projektion gå via renderaren, så att det bara finns ett ställe där upplösningen bestäms, och genom en skriptad tur som tar skärmdumpar av varje sorts överlägg. Pixelkonstens utseende ändras: modeller och kanter blir skarpa mot en grövre terräng, vilket kan se splittrat ut. Det provas i riktigt fönster innan HUD:en görs om.
+
+**Resultat:**
+
+- **Två upplösningar:**
+  - `config.SCREEN_W/H` är 768 × 432, `TERRAIN_SCALE = 3` och `DISPLAY_SCALE = 2`, så fönstret blir 1536 × 864.
+  - Terrängen renderas i 256 × 144 till `terrain_image` och skalas upp. Pyxel skalar en `blt` kring mitten av målet, så bilden läggs vid (256, 144) för att täcka skärmen (`SCALED_AT`). Varje terrängpixel blir då exakt ett block på 3 × 3.
+- **`ScreenView`** ([render/voxel.py](src/flightsim/render/voxel.py)) är renderarens vy i hög upplösning:
+  - Samma kamera, men tre gånger större `focal`, bredd och höjd.
+  - Dess `pixel_distance` är terrängens, med varje värde upprepat över sina 3 × 3 pixlar. Den görs en gång per renderad bild (~0,2 ms).
+  - Alla överlägg får vyn i stället för renderaren, så skymningstesterna fungerar oförändrade: modeller, broar, hangarer, plattor, vrak, träd, ringar, rekordspöket, trafiken, partiklar, regn, fyrlampor och lanternor. Det finns ingen skala att glömma i varje funktion.
+- **Gränssnittet ligger kvar i 256 × 144 tills 8l:**
+  - HUD, menyer, karta, text och startskärmen ritas till ett eget lager (`self.ui`) via [render/canvas.py](src/flightsim/render/canvas.py). Modulen skickar Pyxels ritanrop till skärmen eller till lagret.
+  - Lagret skalas upp över världen med färgen `palette.CLEAR` (241:a färgen i paletten) som genomskinlig.
+  - Gränssnittet ser därför ut precis som förut.
+- **Det som ritas ovanpå behöll sitt utseende i förhållande till terrängen:**
+  - Minsta storlek för bilder och plan på avstånd, regnstreckens längd, ringarnas tjocklek (1 eller 2 terrängpixlar), minsta storlek på partiklar och storleken på lampor och lanternor skalas med `pixel_scale(renderer)`.
+  - Konturen på modellerna är kvar på en skärmpixel. Den ser skarp och ren ut och behövde inte bli bredare.
+- **Startskärmen:** ramen ritas i gränssnittet, men det roterande planet ritas skarpt ovanpå efter uppskalningen. `draw_showcase` tar nu ritytans övre vänstra hörn.
+- **Fotoläget:** fotot sparas i 768 × 432 (`PHOTO_SCALE = 1`) och tas innan gränssnittet läggs på, som förut.
+- **Kartverktyget** (`flightsim-map`) ligger kvar i 256 × 144.
+- **Prestanda:** första versionen gav 24–26 fps i stället för ~29. Pyxel hoppar till nästa vsync när en bildruta tar över ~29 ms (`update` + `draw`), och då tar den ~50 ms. Det är alltså spikarna som avgör. Åtgärder:
+  - **Uppskalningen** görs med NumPy direkt i skärmens minne (`scale_onto_screen` i [render/framebuffer.py](src/flightsim/render/framebuffer.py)): 0,6 ms för terräng och gränssnitt tillsammans, i stället för 3,4 ms med `pyxel.blt(..., scale=3)`.
+  - **Modell eller sprite** (`as_model`) avgörs i terrängpixlar som före 8k. Annars blev det modeller på tre gånger så långt avstånd: nio vrak som modeller kostade 11 ms.
+  - **Skyddsband:** Pyxel blir långsammare ju längre utanför skärmen en form når (en triangel som är en miljon pixlar bred tar ~10 ms). Trianglar och linjer från modeller, broar och ringar klipps därför till 1024 px runt skärmen (`fill_polygon`, `draw_line` i [render/mesh.py](src/flightsim/render/mesh.py)). Det tog bort spikar på 20–50 ms nära hangarer och broar.
+  - **Terrängen blev snabbare:** `smooth_heights` slår upp med platta `take`, `_pixel_angles` slipper `%` och `nan_to_num`, och [memory.py](src/flightsim/memory.py) låter glibc återanvända frigjort minne (`mallopt`). `flightsim --bench` gick från 16,5 till ~8 ms i medel, med identiska bilder. I spelet syns mest de två första; där tar terrängen ~15 ms mot ~17.
+  - **Resultat** (riktigt fönster, rena sparfiler, 300 bildrutor): 28,7–29,2 fps mot 29,1–29,2 före 8k. Vid krasch bredvid 30 vrak blir det 25,6 mot 26,0 fps.
+- **Tester:** 5 nya (totalt 335). De kontrollerar att vyn projicerar till samma ställe ×3, att modellbytet sker på samma avstånd i båda upplösningarna, att klippta former ritar samma pixlar fort, att djupet följer varje ny bild och upprepas rätt, och att gränssnittslagret ritas för sig och läggs över skärmen med `CLEAR` genomskinlig. Visningsrutans test använder den nya signaturen.
+- **Provkört i riktigt fönster** med skärmdumpar:
+  - Startskärmen, start på bana med hangar och träd, och tidslopp med ringar och pil.
+  - Karta, paus, fotoläge med sparat foto, och repris i cockpit- och tornvy.
+  - Natt med storm och regn, krasch i vattnet med rök och eld, och trafikplan.
 
 #### 8l – Blandad upplösning: HUD och menyer *(medel)*
 

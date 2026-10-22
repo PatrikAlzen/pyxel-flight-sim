@@ -34,8 +34,9 @@ import pyxel
 from flightsim import config
 from flightsim.audio import Audio
 from flightsim.controls import Action, flight_controls, pressed
+from flightsim.memory import keep_freed_memory
 from flightsim.persist import Place, Profile, SaveStore, WorldSave
-from flightsim.render import palette
+from flightsim.render import canvas, palette
 from flightsim.render.bridges import draw_bridges
 from flightsim.render.buildings import (
     door_facing,
@@ -54,7 +55,7 @@ from flightsim.render.effects import (
     in_front_of_terrain,
     project_points,
 )
-from flightsim.render.framebuffer import image_array, screen_array
+from flightsim.render.framebuffer import image_array, scale_onto_screen
 from flightsim.render.hud import (
     HUD,
     TEXT,
@@ -65,7 +66,7 @@ from flightsim.render.hud import (
     shadow_text,
 )
 from flightsim.render.models import (
-    LOD_PIXELS,
+    as_model,
     draw_plane,
     draw_showcase,
     draw_wreck,
@@ -87,7 +88,7 @@ from flightsim.render.sprites import (
     make_image,
     plane_sprites,
 )
-from flightsim.render.voxel import VoxelRenderer
+from flightsim.render.voxel import ScreenView, VoxelRenderer
 from flightsim.render.worldmap import (
     ZOOMS,
     WorldMap,
@@ -133,7 +134,9 @@ from flightsim.terrain.objects import HEIGHT, Kind, Objects, hit
 from flightsim.terrain.settlements import Lighthouse
 from flightsim.terrain.world import TerrainWorld
 
-W, H = config.SCREEN_W, config.SCREEN_H
+W, H = config.SCREEN_W, config.SCREEN_H  # the screen: the world, drawn sharp
+SCALE = config.TERRAIN_SCALE
+UW, UH = W // SCALE, H // SCALE  # the terrain, and the interface laid over it
 DT = 1 / config.FPS
 MAX_PITCH = math.radians(89)  # ghost camera; it can roll freely
 TITLE_MAP_STEP = 32
@@ -198,9 +201,12 @@ class App:
         self.preview = WorldMap(TerrainGenerator(self.seed))
         self.world: TerrainWorld | None = None
         self.world_map: WorldMap | None = None
-        self.renderer = VoxelRenderer(W, H)
+        self.renderer = VoxelRenderer(UW, UH)
+        self.view = ScreenView(self.renderer, SCALE)  # for what is drawn sharp
         # The title screen's turning aircraft: nothing in the world may hide it.
-        self.showcase = VoxelRenderer(SHOWCASE[2] - 2, SHOWCASE[3] - 2)
+        self.showcase = VoxelRenderer(
+            (SHOWCASE[2] - 2) * SCALE, (SHOWCASE[3] - 2) * SCALE
+        )
         self.base_renderer = self.renderer  # the photo mode zooms with others
         self.zoomed_renderers: dict[float, VoxelRenderer] = {}
         self.hud = Hud(self.renderer.focal, config.RESPAWN_DELAY)
@@ -296,6 +302,10 @@ class App:
             quit_key=pyxel.KEY_NONE,  # ESC opens the pause menu instead
         )
         palette.install()
+        # The terrain is rendered small and scaled up; the interface is drawn
+        # small and laid over the sharp world, its CLEAR pixels left out.
+        self.terrain_pixels = np.zeros((UH, UW), dtype=np.uint8)
+        self.ui = pyxel.Image(UW, UH)
         self.title_images = make_title_images(config.TITLE.upper())
         # Rear, front, side, top and wreck images for each aircraft type.
         self.type_views = [
@@ -922,22 +932,24 @@ class App:
                 )
 
     def draw_replay(self) -> None:
-        self.draw_view()
         plane = self.replay_plane
         cockpit = REPLAY_VIEWS[self.replay_view] == "COCKPIT"
         if plane.state is not FlightState.CRASHED and not cockpit:
             self.draw_model(plane, self.playback.time)
+
+    def draw_replay_bar(self) -> None:
+        """Time line, speed, camera and help, on the interface layer."""
         playback = self.playback
         duration = playback.recording.duration
-        shaded_rect(0, H - 12, W, 12)
-        x0, x1 = 4, W - 4
-        pyxel.line(x0, H - 11, x1, H - 11, pyxel.COLOR_GRAY)
+        shaded_rect(0, UH - 12, UW, 12)
+        x0, x1 = 4, UW - 4
+        canvas.line(x0, UH - 11, x1, UH - 11, pyxel.COLOR_GRAY)
         done = x0 + (x1 - x0) * playback.time / duration
-        pyxel.line(x0, H - 11, done, H - 11, pyxel.COLOR_YELLOW)
+        canvas.line(x0, UH - 11, done, UH - 11, pyxel.COLOR_YELLOW)
         state = "END" if playback.finished else "PAUSED" if playback.paused else ""
         shadow_text(
             4,
-            H - 8,
+            UH - 8,
             f"REPLAY {format_time(playback.time)}/{format_time(duration)}"
             f"  {playback.speed:g}X  {REPLAY_VIEWS[self.replay_view]}  {state}",
             TEXT,
@@ -945,9 +957,9 @@ class App:
         if self.replay_help:
             lines = ["</> SEEK  SPACE PAUSE  ^/v SPEED  C CAMERA  F3 BACK"]
             if REPLAY_VIEWS[self.replay_view] == "FREE":
-                lines.insert(0, "A/D CIRCLE  Q/E TILT  W/S CLOSER/FURTHER")
+                lines.insert(0, "A/D CIRCLE  Q/E TILT  UW/S CLOSER/FURTHER")
             for i, line in enumerate(lines):
-                shadow_text(4, H - 20 - 8 * (len(lines) - 1 - i), line, TEXT)
+                shadow_text(4, UH - 20 - 8 * (len(lines) - 1 - i), line, TEXT)
 
     # --- photo mode -------------------------------------------------------
 
@@ -989,10 +1001,11 @@ class App:
         else:
             if fov not in self.zoomed_renderers:
                 settings = replace(base.settings, fov_degrees=fov)
-                self.zoomed_renderers[fov] = VoxelRenderer(W, H, settings)
+                self.zoomed_renderers[fov] = VoxelRenderer(UW, UH, settings)
             renderer = self.zoomed_renderers[fov]
         renderer.visibility = self.renderer.visibility
         self.renderer = renderer
+        self.view = ScreenView(renderer, SCALE)
 
     def update_photo(self) -> None:
         """Move the camera; nothing else in the world moves."""
@@ -1372,7 +1385,7 @@ class App:
             self.award_until = now + config.AWARD_SECONDS
             if not self.awards:
                 return
-        shaded_rect(0, 40, W, 11)
+        shaded_rect(0, 40, UW, 11)
         centered_text(42, f"ACHIEVEMENT: {self.awards[0]}", pyxel.COLOR_YELLOW)
 
     def update_achievements_menu(self) -> None:
@@ -1396,10 +1409,10 @@ class App:
         rows = ACHIEVEMENT_ROWS
         first = max(0, min(self.menu_index - rows // 2, len(ACHIEVEMENTS) - rows))
         width, height = 200, 46 + rows * 8
-        x, y = (W - width) // 2, (H - height) // 2
-        shaded_rect(0, 0, W, H)
-        pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
-        pyxel.rectb(x, y, width, height, HUD)
+        x, y = (UW - width) // 2, (UH - height) // 2
+        shaded_rect(0, 0, UW, UH)
+        canvas.rect(x, y, width, height, pyxel.COLOR_BLACK)
+        canvas.rectb(x, y, width, height, HUD)
         earned = self.profile.earned
         centered_text(
             y + 4, f"ACHIEVEMENTS {len(earned)}/{len(ACHIEVEMENTS)}", pyxel.COLOR_YELLOW
@@ -1413,7 +1426,7 @@ class App:
             if i == self.menu_index:
                 color = TEXT
                 name = f"> {name}"
-            pyxel.text(x + 8, y + 14 + row * 8, f"{mark} {name}", color)
+            canvas.text(x + 8, y + 14 + row * 8, f"{mark} {name}", color)
         item = ACHIEVEMENTS[self.menu_index]
         got = item.key in earned
         about = "???" if item.hidden and not got else item.description.upper()
@@ -1470,7 +1483,7 @@ class App:
                 flight.forward,
                 flight.up,
                 self.camera,
-                self.renderer,
+                self.view,
                 propeller=self.time * PROPELLER_SPEED,
             )
             if lights:
@@ -1488,13 +1501,13 @@ class App:
                 (flight.position - flight.forward * span / 2, pyxel.COLOR_WHITE)
             )
         points = np.array([p for p, _ in tips])
-        sx, sy, depth = project_points(self.camera, points, self.renderer.focal, W, H)
+        sx, sy, depth = project_points(self.camera, points, self.view.focal, W, H)
         seen = (depth > 1.0) & in_front_of_terrain(
-            self.renderer, self.camera, points, sx, sy
+            self.view, self.camera, points, sx, sy
         )
         for (_, color), x, y, ok in zip(tips, sx, sy, seen):
             if ok:
-                pyxel.pset(x, y, color)
+                pyxel.circ(x, y, SCALE // 2, color)
 
     def save_profile(self) -> None:
         try:
@@ -1670,6 +1683,23 @@ class App:
         self.frame_time.add(now - self.last_frame)
         self.last_frame = now
 
+        # The world, sharp, straight onto the screen.
+        canvas.use(None)
+        match self.mode:
+            case Mode.FLYING | Mode.PAUSED:
+                self.draw_world()
+            case Mode.PHOTO:
+                self.draw_world()
+                self.draw_photo()
+            case Mode.REPLAY:
+                self.draw_world()
+                self.draw_replay()
+            case _:
+                pyxel.cls(pyxel.COLOR_BLACK)
+
+        # The interface, at the terrain's resolution, on its own layer.
+        canvas.use(self.ui)
+        canvas.cls(palette.CLEAR)
         match self.mode:
             case Mode.TITLE:
                 self.draw_title()
@@ -1696,11 +1726,12 @@ class App:
                     self.map_helipads(),
                 )
             case Mode.PHOTO:
-                self.draw_photo()
+                if self.photo_help:
+                    self.draw_photo_help()
             case Mode.REPLAY:
-                self.draw_replay()
+                self.draw_replay_bar()
             case Mode.FLYING | Mode.PAUSED:
-                self.draw_view()
+                self.draw_hud()
                 if self.mode is Mode.PAUSED:
                     if self.places_menu:
                         self.draw_places_menu()
@@ -1712,7 +1743,7 @@ class App:
             # Below the time-trial panel while racing, under the compass otherwise.
             racing = self.race is not None and self.mode is Mode.FLYING
             if self.mode is Mode.PAUSED:
-                y = H - 12  # clear of the pause menu
+                y = UH - 12  # clear of the pause menu
             else:
                 y = 52 if racing else 32
             centered_text(y, self.toast, pyxel.COLOR_YELLOW)
@@ -1720,14 +1751,20 @@ class App:
             self.draw_award()
         if self.show_debug and self.world:
             self.draw_debug()
+        canvas.use(None)
+        scale_onto_screen(image_array(self.ui), palette.CLEAR)
+        if self.mode is Mode.TITLE:
+            self.draw_showcase_model()  # sharp, over its frame
 
-    def draw_view(self) -> None:
+    def draw_world(self) -> None:
+        """The terrain, scaled up, and everything on it, drawn sharp."""
         start = time.perf_counter()
         self.renderer.render(
-            screen_array(), self.world.levels, self.camera, self.time, self.clouds
+            self.terrain_pixels, self.world.levels, self.camera, self.time, self.clouds
         )
         self.render_time.add(time.perf_counter() - start)
-        draw_particles(self.particles, self.camera, self.renderer)
+        scale_onto_screen(self.terrain_pixels)
+        draw_particles(self.particles, self.camera, self.view)
         self.draw_helipads()
         hangars = self.draw_airfield_props()
         bridges = self.bridges_near(
@@ -1741,11 +1778,9 @@ class App:
         )
         self.draw_objects(beyond=split)
         if bridges:
-            draw_bridges(
-                bridges, self.camera, self.renderer, config.BRIDGE_DRAW_DISTANCE
-            )
+            draw_bridges(bridges, self.camera, self.view, config.BRIDGE_DRAW_DISTANCE)
         for _, position, facing in sorted(hangars, key=lambda h: -h[0]):
-            draw_hangar(self.hangar_model, position, facing, self.camera, self.renderer)
+            draw_hangar(self.hangar_model, position, facing, self.camera, self.view)
         if bridges or hangars:
             self.draw_objects(within=split)
         nearby, kinds = self.wrecks.near_with_kinds(
@@ -1757,7 +1792,7 @@ class App:
         away = np.hypot(nearby[:, 0] - self.camera.x, nearby[:, 1] - self.camera.y)
         big = np.array(
             [
-                wreck_size(k, d, self.renderer) >= LOD_PIXELS
+                as_model(wreck_size(k, d, self.view), self.view)
                 for k, d in zip(kinds, away)
             ],
             dtype=bool,
@@ -1767,7 +1802,7 @@ class App:
             TRANSPARENT,
             nearby[~big],
             self.camera,
-            self.renderer,
+            self.view,
             [
                 WRECK_FULL_SIZE_DISTANCE * self.zoom * t.span / TRAINER.span
                 for t in TYPES
@@ -1776,9 +1811,9 @@ class App:
             variants=kinds[~big],
         )
         for i in np.flatnonzero(big)[np.argsort(-away[big])]:
-            draw_wreck(int(kinds[i]), nearby[i], self.camera, self.renderer)
+            draw_wreck(int(kinds[i]), nearby[i], self.camera, self.view)
         if self.race:
-            draw_rings(self.race, self.camera, self.renderer)
+            draw_rings(self.race, self.camera, self.view)
             self.draw_record_ghost()
         chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
         if chase and not self.ghost and self.mode is Mode.FLYING:
@@ -1786,8 +1821,10 @@ class App:
         if self.mode is not Mode.REPLAY:  # traffic is at the live time
             self.draw_traffic()
         self.draw_rain()
-        if self.mode in (Mode.PHOTO, Mode.REPLAY):
-            return
+
+    def draw_hud(self) -> None:
+        """Instruments over the world, on the interface layer."""
+        chase = self.chase_view and self.aircraft.state is not FlightState.CRASHED
         match self.hud_mode:
             case HudMode.NONE:
                 return
@@ -1799,7 +1836,7 @@ class App:
                 )
                 return
         if self.ghost:
-            centered_text(H - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
+            centered_text(UH - 9, "GHOST CAMERA - G TO FLY FROM HERE", TEXT)
             return
         self.hud.draw(
             self.aircraft,
@@ -1817,7 +1854,7 @@ class App:
             self.hud.race_panel(self.race, self.race_flash)
 
     def draw_photo(self) -> None:
-        self.draw_view()
+        """The plane over the world, the frame, and the photo itself."""
         plane = self.aircraft
         if (
             self.photo_plane
@@ -1830,27 +1867,25 @@ class App:
             pyxel.rect(0, 0, W, bar, pyxel.COLOR_BLACK)
             pyxel.rect(0, H - bar, W, bar, pyxel.COLOR_BLACK)
         if self.photo_requested:
-            self.take_photo()
+            self.take_photo()  # before the interface goes on top
         if time.perf_counter() < self.photo_flash_until:
             pyxel.dither(0.5)
             pyxel.rect(0, 0, W, H, pyxel.COLOR_WHITE)
             pyxel.dither(1.0)
-        if self.photo_help:
-            self.draw_photo_help()
 
     def draw_photo_help(self) -> None:
         orbit = self.photo.mode is FreeMode.ORBIT
         fov = config.PHOTO_FOVS[self.photo_fov]
         shadow_text(4, 4, f"PHOTO  {self.photo.mode.value}  FOV {fov:.0f}", HUD)
         lines = [
-            "ARROWS CIRCLE  W/S CLOSER/FURTHER  TAB FLY"
+            "ARROWS CIRCLE  UW/S CLOSER/FURTHER  TAB FLY"
             if orbit
-            else "ARROWS LOOK  W/S/A/D MOVE  Q/E DOWN/UP  TAB ORBIT",
+            else "ARROWS LOOK  UW/S/A/D MOVE  Q/E DOWN/UP  TAB ORBIT",
             "Z/X ZOOM  T TIME  V WEATHER  F FRAME  O PLANE",
-            "ENTER SAVE  L PLACE  H HELP  F2 BACK",
+            "ENTER SAVE  L PLACE  UH HELP  F2 BACK",
         ]
         for i, line in enumerate(lines):
-            shadow_text(4, H - 8 * (len(lines) - i), line, TEXT)
+            shadow_text(4, UH - 8 * (len(lines) - i), line, TEXT)
 
     def not_yet_crashed(self, wrecks: np.ndarray) -> np.ndarray:
         """Which wrecks to show in a replay: not the one of the crash still to come."""
@@ -1866,7 +1901,7 @@ class App:
         cam = self.camera
         above = cam.altitude - self.clouds.altitude
         amount = self.weather.current.rain * min(1.0, max(0.0, 1.0 - above / 40.0))
-        self.rain.draw(amount, cam, self.renderer)
+        self.rain.draw(amount, cam, self.view)
 
     def draw_record_ghost(self) -> None:
         """The record run, replayed as a see-through plane flying alongside."""
@@ -1893,7 +1928,7 @@ class App:
             forward,
             up,
             self.camera,
-            self.renderer,
+            self.view,
             propeller=race.elapsed * PROPELLER_SPEED,
         )
         pyxel.dither(1.0)
@@ -1936,8 +1971,8 @@ class App:
             TRANSPARENT,
             near.position,
             cam,
-            self.renderer,
-            [f * self.renderer.focal for f in self.object_full_size_per_focal],
+            self.view,
+            [f * self.view.focal for f in self.object_full_size_per_focal],
             variants=base[near.kind] + near.variant,
             scales=near.scale,
             limit=config.OBJECT_LIMIT,
@@ -1952,12 +1987,12 @@ class App:
         lamps = np.array(
             [[t.x, t.y, t.z + HEIGHT[Kind.LIGHTHOUSE] * 0.93] for t in lights]
         )
-        sx, sy, depth = project_points(self.camera, lamps, self.renderer.focal, W, H)
+        sx, sy, depth = project_points(self.camera, lamps, self.view.focal, W, H)
         seen = (depth > 1.0) & (sx >= 0) & (sx < W) & (sy >= 0) & (sy < H)
-        seen &= in_front_of_terrain(self.renderer, self.camera, lamps, sx, sy)
+        seen &= in_front_of_terrain(self.view, self.camera, lamps, sx, sy)
         for x, y in zip(sx[seen], sy[seen]):
-            pyxel.circ(x, y, 1, pyxel.COLOR_YELLOW)
-            pyxel.pset(x, y, pyxel.COLOR_WHITE)
+            pyxel.circ(x, y, SCALE, pyxel.COLOR_YELLOW)
+            pyxel.circ(x, y, SCALE // 2, pyxel.COLOR_WHITE)
 
     def draw_helipads(self) -> None:
         """Helicopter pads near the camera, far ones first; they lie flat on
@@ -1968,7 +2003,7 @@ class App:
         )
         pads.sort(key=lambda p: -math.hypot(p.x - cam.x, p.y - cam.y))
         for pad in pads:
-            draw_helipad(self.helipad_model, pad, cam, self.renderer)
+            draw_helipad(self.helipad_model, pad, cam, self.view)
 
     def draw_airfield_props(self) -> list[tuple[float, np.ndarray, np.ndarray]]:
         """Hangars and windsocks at the airfields around the camera, as pictures.
@@ -1995,13 +2030,13 @@ class App:
                     left = self.wind[0] * right[0] + self.wind[1] * right[1] < 0
                     variants = np.full(len(positions), int(left))
                 first = sprite if isinstance(sprite, pyxel.Image) else sprite[0]
-                full = full_size_distance(first, width, self.renderer.focal)
+                full = full_size_distance(first, width, self.view.focal)
                 draw_billboards(
                     sprite,
                     TRANSPARENT,
                     positions,
                     cam,
-                    self.renderer,
+                    self.view,
                     full,
                     variants=variants,
                 )
@@ -2016,9 +2051,8 @@ class App:
         far = []
         for position in positions:
             depth = float((position - np.array(cam.position)) @ f)
-            wide = (
-                depth <= 0
-                or config.HANGAR_WIDTH * self.renderer.focal / depth >= LOD_PIXELS
+            wide = depth <= 0 or as_model(
+                config.HANGAR_WIDTH * self.view.focal / depth, self.view
             )
             if not wide:
                 far.append(position)
@@ -2046,7 +2080,7 @@ class App:
         if step > config.MAP_SETTLEMENT_ZOOM:
             return [], []
         plane, s = self.aircraft, self.world.generator.settlements
-        rx, ry = W / 2 * step, H / 2 * step
+        rx, ry = UW / 2 * step, UH / 2 * step
         box = (plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry)
         return s.villages(*box), s.lighthouses(*box)
 
@@ -2056,7 +2090,7 @@ class App:
         if step > config.MAP_SETTLEMENT_ZOOM:
             return []
         plane = self.aircraft
-        rx, ry = W / 2 * step, H / 2 * step
+        rx, ry = UW / 2 * step, UH / 2 * step
         return self.world.generator.helipads.overlapping(
             plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
         )
@@ -2067,7 +2101,7 @@ class App:
         if step > config.MAP_SETTLEMENT_ZOOM:
             return []
         plane = self.aircraft
-        rx, ry = W / 2 * step, H / 2 * step
+        rx, ry = UW / 2 * step, UH / 2 * step
         return self.world.generator.bridges.overlapping(
             plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
         )
@@ -2075,7 +2109,7 @@ class App:
     def map_airfields(self) -> list[Airfield]:
         """Airfields in and around the area the map shows."""
         plane, step = self.aircraft, ZOOMS[self.map_zoom]
-        rx, ry = W / 2 * step, H / 2 * step
+        rx, ry = UW / 2 * step, UH / 2 * step
         return self.world.generator.airfields.overlapping(
             plane.x - rx, plane.y - ry, plane.x + rx, plane.y + ry
         )
@@ -2094,7 +2128,7 @@ class App:
             plane.forward,
             plane.up,
             self.camera,
-            self.renderer,
+            self.view,
             propeller=clock * PROPELLER_SPEED * (0.3 + plane.throttle),
         )
 
@@ -2103,24 +2137,24 @@ class App:
         sx, sy = self.preview.to_screen(0.0, 0.0)
         draw_plane_marker(sx, sy, 0.0)
 
-        shaded_rect(0, 18, W, 30)
+        shaded_rect(0, 18, UW, 30)
         shadow, title = self.title_images
-        x = (W - title.width) / 2
-        pyxel.blt(x + 1, 30, shadow, 0, 0, title.width, title.height, 2, scale=3)
-        pyxel.blt(x, 29, title, 0, 0, title.width, title.height, 2, scale=3)
+        x = (UW - title.width) / 2
+        canvas.blt(x + 1, 30, shadow, 0, 0, title.width, title.height, 2, scale=3)
+        canvas.blt(x, 29, title, 0, 0, title.width, title.height, 2, scale=3)
 
-        shaded_rect(0, H - 34, W, 34)
-        self.title_line(H - 30, "SEED", f"SEED {self.seed}")
+        shaded_rect(0, UH - 34, UW, 34)
+        self.title_line(UH - 30, "SEED", f"SEED {self.seed}")
         if self.title_summary is None or self.title_summary[0] != self.seed:
             self.title_summary = (self.seed, self.store.summary(self.seed))
         wrecks, places = self.title_summary[1]
         if wrecks or places:
-            shaded_rect(0, 50, W, 10)
+            shaded_rect(0, 50, UW, 10)
             saved = f"{plural(wrecks, 'WRECK')}, {plural(places, 'PLACE')}"
             centered_text(52, f"SAVED HERE: {saved}", TEXT)
-        centered_text(H - 21, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  R RANDOM", HUD)
+        centered_text(UH - 21, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  R RANDOM", HUD)
         start = "ON A RUNWAY" if self.start_on_runway else "IN THE AIR"
-        shaded_rect(0, 62, W, 28)
+        shaded_rect(0, 62, UW, 28)
         self.title_line(64, "START", f"START {start}", SHOWCASE[0] / 2)
         plane = self.plane_type
         self.title_line(74, "AIRCRAFT", f"AIRCRAFT {plane.name}", SHOWCASE[0] / 2)
@@ -2130,11 +2164,11 @@ class App:
             plane.description,
             pyxel.COLOR_GRAY,
         )
-        self.draw_showcase()
+        self.draw_showcase_frame()
         if pyxel.frame_count // 15 % 2 == 0:
-            centered_text(H - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
+            centered_text(UH - 11, "PRESS ENTER OR (A) TO FLY", TEXT)
 
-    def title_line(self, y: int, row: str, text: str, middle: float = W / 2) -> None:
+    def title_line(self, y: int, row: str, text: str, middle: float = UW / 2) -> None:
         """One choice on the title screen, centred on ``middle``; the selected
         one has arrows."""
         if TITLE_ROWS[self.title_row] == row:
@@ -2143,37 +2177,41 @@ class App:
             color = pyxel.COLOR_LIGHT_BLUE
         shadow_text(middle - len(text) * 2, y, text, color)
 
-    def draw_showcase(self) -> None:
-        """The chosen aircraft turning slowly in a frame beside the choices."""
+    def draw_showcase_frame(self) -> None:
+        """The frame beside the choices that the chosen aircraft turns in."""
         x0, y0, w, h = SHOWCASE
-        pyxel.rect(x0, y0, w, h, pyxel.COLOR_NAVY)
-        pyxel.rectb(x0, y0, w, h, HUD)
+        canvas.rect(x0, y0, w, h, pyxel.COLOR_NAVY)
+        canvas.rectb(x0, y0, w, h, HUD)
+
+    def draw_showcase_model(self) -> None:
+        """The chosen aircraft turning slowly, sharp, inside its frame."""
+        x0, y0, _, _ = SHOWCASE
         draw_showcase(
             TYPES.index(self.plane_type),
             pyxel.frame_count * SHOWCASE_TURN,
-            SHOWCASE,
+            ((x0 + 1) * SCALE, (y0 + 1) * SCALE),
             self.showcase,
             propeller=pyxel.frame_count * 0.6,
         )
 
     def draw_loading(self) -> None:
-        pyxel.cls(pyxel.COLOR_NAVY)
-        centered_text(H // 2 - 22, f"SEED {self.seed}", pyxel.COLOR_YELLOW)
-        centered_text(H // 2 - 10, "GENERATING TERRAIN", TEXT)
+        canvas.cls(pyxel.COLOR_NAVY)
+        centered_text(UH // 2 - 22, f"SEED {self.seed}", pyxel.COLOR_YELLOW)
+        centered_text(UH // 2 - 10, "GENERATING TERRAIN", TEXT)
         bar_w = 120
-        x = (W - bar_w) // 2
-        pyxel.rectb(x, H // 2, bar_w, 6, TEXT)
-        pyxel.rect(x + 1, H // 2 + 1, int((bar_w - 2) * self.progress), 4, HUD)
+        x = (UW - bar_w) // 2
+        canvas.rectb(x, UH // 2, bar_w, 6, TEXT)
+        canvas.rect(x + 1, UH // 2 + 1, int((bar_w - 2) * self.progress), 4, HUD)
 
     def draw_pause_menu(self) -> None:
         items = self.pause_items()
         # Rows close up when the menu is long, so it stays clear of the toast.
-        spacing = min(10, (H - 40) // len(items))
+        spacing = min(10, (UH - 40) // len(items))
         width, height = 100, 22 + len(items) * spacing
-        x, y = (W - width) // 2, (H - 14 - height) // 2
-        shaded_rect(0, 0, W, H)
-        pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
-        pyxel.rectb(x, y, width, height, HUD)
+        x, y = (UW - width) // 2, (UH - 14 - height) // 2
+        shaded_rect(0, 0, UW, UH)
+        canvas.rect(x, y, width, height, pyxel.COLOR_BLACK)
+        canvas.rectb(x, y, width, height, HUD)
         centered_text(y + 5, "PAUSED", pyxel.COLOR_YELLOW)
         for i, item in enumerate(items):
             selected = i == self.menu_index
@@ -2187,10 +2225,10 @@ class App:
         first = max(0, min(self.menu_index - PLACE_ROWS // 2, len(items) - PLACE_ROWS))
         shown = items[first : first + PLACE_ROWS]
         width, height = 150, 34 + len(shown) * 10
-        x, y = (W - width) // 2, (H - height) // 2
-        shaded_rect(0, 0, W, H)
-        pyxel.rect(x, y, width, height, pyxel.COLOR_BLACK)
-        pyxel.rectb(x, y, width, height, HUD)
+        x, y = (UW - width) // 2, (UH - height) // 2
+        shaded_rect(0, 0, UW, UH)
+        canvas.rect(x, y, width, height, pyxel.COLOR_BLACK)
+        canvas.rectb(x, y, width, height, HUD)
         centered_text(y + 5, "PLACES", pyxel.COLOR_YELLOW)
         for row, item in enumerate(shown):
             i = first + row
@@ -2236,9 +2274,11 @@ def bench(frames: int, speed: float) -> None:
         f"initial terrain {config.TERRAIN_LEVELS}: {time.perf_counter() - start:.2f} s"
     )
 
-    renderer = VoxelRenderer(W, H)
-    print(f"resolution {W}x{H}, depth slices {len(renderer.z)}")
-    img = pyxel.Image(W, H)  # keep a reference: the view does not keep the image alive
+    renderer = VoxelRenderer(UW, UH)
+    print(f"resolution {UW}x{UH}, depth slices {len(renderer.z)}")
+    img = pyxel.Image(
+        UW, UH
+    )  # keep a reference: the view does not keep the image alive
     out = image_array(img)
     camera = Camera(heading=math.radians(70))
     frame_budget = 1 / config.FPS
@@ -2283,6 +2323,7 @@ def main() -> None:
         "--speed", type=float, default=10.0, help="bench flight speed, units per frame"
     )
     args = parser.parse_args()
+    keep_freed_memory()
     if args.bench:
         bench(args.frames, args.speed)
     else:

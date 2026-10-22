@@ -163,3 +163,32 @@ def test_colour_edges_move_smoothly_with_the_camera():
         rows.append(int(np.flatnonzero(column == WALL).max()))  # lowest snow pixel
     jumps = np.abs(np.diff(rows))
     assert jumps.max() <= 1, rows
+
+
+def test_screen_view_projects_to_the_same_place_scaled_up():
+    from flightsim.render.voxel import ScreenView
+
+    renderer = VoxelRenderer(W, H, RenderSettings(z_far=150))
+    view = ScreenView(renderer, 3)
+    assert (view.width, view.height, view.focal) == (3 * W, 3 * H, 3 * renderer.focal)
+    camera = Camera(altitude=20, heading=0.3, pitch=-0.2)
+    point = np.array([10.0, -40.0, 5.0])
+    small = camera.project(point, renderer.focal, W, H)
+    big = camera.project(point, view.focal, view.width, view.height)
+    assert np.allclose(np.asarray(big[:2]), np.asarray(small[:2]) * 3)
+
+
+def test_screen_view_distance_follows_each_rendered_frame():
+    from flightsim.render.voxel import ScreenView
+
+    renderer = VoxelRenderer(W, H, RenderSettings(z_far=150))
+    view = ScreenView(renderer, 3)
+    out = np.zeros((H, W), dtype=np.uint8)
+    renderer.render(out, [flat_level()], Camera(altitude=20))
+    first = view.pixel_distance
+    assert first.shape == (3 * H, 3 * W)
+    assert np.array_equal(first[::3, ::3], renderer.pixel_distance)
+    assert np.array_equal(first[2::3, 1::3], renderer.pixel_distance)
+    assert view.pixel_distance is first  # made once per frame
+    renderer.render(out, [flat_level()], Camera(altitude=60))
+    assert np.array_equal(view.pixel_distance[::3, ::3], renderer.pixel_distance)

@@ -16,7 +16,8 @@ def test_palette_layout():
         palette.SKY_BASE
         == palette.TERRAIN_BASE + palette.TERRAIN_COLORS * palette.FOG_LEVELS
     )
-    assert len(colors) == palette.SKY_BASE + palette.SKY_COLORS
+    assert palette.CLEAR == palette.SKY_BASE + palette.SKY_COLORS
+    assert len(colors) == palette.CLEAR + 1 <= 256
 
 
 @pytest.mark.parametrize("lighting", palette.LIGHTINGS, ids=lambda lt: lt.name)

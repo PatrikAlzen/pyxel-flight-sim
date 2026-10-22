@@ -346,12 +346,16 @@ class VoxelRenderer:
         rx = f[0] + self._px * r[0] + self._py * u[0]
         ry = f[1] + self._px * r[1] + self._py * u[1]
         rz = f[2] + self._px * r[2] + self._py * u[2]
-        azimuth = np.arctan2(rx, -ry) % math.tau
-        horizontal = np.hypot(rx, ry)
+        azimuth = np.arctan2(rx, -ry)
+        azimuth = np.where(azimuth < 0, azimuth + math.tau, azimuth)  # faster than %
+        horizontal = np.sqrt(rx * rx + ry * ry)
+        # Straight up or down there is no horizontal direction: 0 there.
+        level = horizontal > 0
         with np.errstate(divide="ignore", invalid="ignore"):
             slope = np.clip(rz / horizontal, -_MAX_SLOPE, _MAX_SLOPE)
-            east, south = rx / horizontal, ry / horizontal
-        return azimuth, np.nan_to_num(slope), np.nan_to_num(east), np.nan_to_num(south)
+        east = np.divide(rx, horizontal, out=np.zeros_like(rx), where=level)
+        south = np.divide(ry, horizontal, out=np.zeros_like(ry), where=level)
+        return azimuth, np.nan_to_num(slope), east, south
 
     def _pixel_tiers(self, camera: Camera) -> np.ndarray:
         """Azimuth tier per pixel: 0 = full resolution, higher = coarser.
@@ -424,3 +428,42 @@ def local_peak(
             cols = (ix + np.arange(-cells, cells + 1)) & level.mask
             return float(level.heights[np.ix_(rows, cols)].max())
     return float(levels[-1].heights.max())
+
+
+class ScreenView:
+    """A renderer's view at ``scale`` times its resolution, for what is drawn
+    sharp on top of the scaled-up terrain: the same camera and field of view,
+    so a point projects to the same place, but more pixels and a longer focal
+    length. Its ``pixel_distance`` is the terrain's, each value repeated over
+    the ``scale`` x ``scale`` screen pixels it covers (made once per rendered
+    frame). Everything else (fog, settings) is the renderer's.
+    """
+
+    def __init__(self, renderer: VoxelRenderer, scale: int) -> None:
+        self.renderer = renderer
+        self.scale = scale
+        self.width = renderer.width * scale
+        self.height = renderer.height * scale
+        self.focal = renderer.focal * scale
+        self._source: np.ndarray | None = None
+        self._distance: np.ndarray | None = None
+
+    @property
+    def pixel_distance(self) -> np.ndarray:
+        source = self.renderer.pixel_distance
+        if source is not self._source:
+            s = self.scale
+            self._distance = np.repeat(np.repeat(source, s, axis=0), s, axis=1)
+            self._source = source
+        return self._distance
+
+    @property
+    def settings(self) -> RenderSettings:
+        return self.renderer.settings
+
+    @property
+    def visibility(self) -> float:
+        return self.renderer.visibility
+
+    def fog_for(self, z: np.ndarray) -> np.ndarray:
+        return self.renderer.fog_for(z)

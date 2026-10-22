@@ -113,6 +113,22 @@ def test_close_planes_are_models_far_ones_sprites():
     assert plane_size(0, np.array([0.0, 5.0, 100.0]), camera, renderer) == math.inf
 
 
+def test_the_switch_to_a_model_is_as_far_away_drawn_sharp():
+    """Models cost more than sprites, so drawing sharp over the scaled-up
+    terrain must not make them switch on further away."""
+    from flightsim.render.models import as_model
+    from flightsim.render.voxel import ScreenView, VoxelRenderer
+
+    renderer = VoxelRenderer(256, 144)
+    view = ScreenView(renderer, 3)
+    camera = Camera(x=0.0, y=0.0, altitude=100.0)
+    for distance in (20.0, 40.0, 60.0, 80.0, 120.0):
+        at = np.array([0.0, -distance, 100.0])
+        assert as_model(plane_size(0, at, camera, renderer), renderer) == as_model(
+            plane_size(0, at, camera, view), view
+        )
+
+
 def test_wrecks_have_lost_the_right_wing():
     for kind, wreck in enumerate(WRECKS):
         if TYPES[kind].helicopter:
@@ -197,7 +213,7 @@ def test_title_screen_model_draws_only_inside_its_frame(screen):
     renderer = VoxelRenderer(54, 48)
     for degrees in range(0, 360, 30):
         screen_array()[:] = SKY
-        draw_showcase(2, math.radians(degrees), frame, renderer)
+        draw_showcase(2, math.radians(degrees), (frame[0] + 1, frame[1] + 1), renderer)
         image = screen_array()
         inside = image[55:103, 197:251]
         assert (inside != SKY).any()
@@ -223,3 +239,38 @@ def test_title_screen_model_holds_still_while_its_rotors_turn(kind):
         xs, ys = zip(*(camera.project(p, renderer.focal, 54, 48)[:2] for p in world))
         assert min(xs) >= 1 and max(xs) <= 53 and min(ys) >= 1 and max(ys) <= 47
     assert np.allclose(places, places[0])
+
+
+def test_shapes_reaching_far_off_screen_are_cut_but_look_the_same(screen):
+    """Pyxel takes longer the further a shape reaches; cut to a band round the
+    screen, a huge triangle or line draws the same pixels, quickly."""
+    import time
+
+    from flightsim.render.framebuffer import screen_array
+    from flightsim.render.mesh import View, draw_line, fill_polygon
+    from flightsim.render.voxel import VoxelRenderer
+
+    view = View(Camera(), VoxelRenderer(256, 144))
+    xs, ys = [-2e6, 3e6, 100.0], [-1e6, 50.0, 4e6]
+    screen_array()[:] = SKY
+    screen.tri(*[v for p in zip(xs, ys) for v in p], screen.COLOR_RED)
+    screen.line(-3e6, -1e6, 2e6, 9e5, screen.COLOR_WHITE)
+    expected = screen_array().copy()
+
+    screen_array()[:] = SKY
+    start = time.perf_counter()
+    fill_polygon(view, xs, ys, screen.COLOR_RED)
+    draw_line(view, -3e6, -1e6, 2e6, 9e5, screen.COLOR_WHITE)
+    took = time.perf_counter() - start
+    image = screen_array()
+    # The same up to a pixel along the edges (where rounding differs).
+    assert (image != expected).mean() < 0.01
+    assert (image == screen.COLOR_RED).sum() > 0.9 * (
+        expected == screen.COLOR_RED
+    ).sum()
+    assert took < 0.005
+
+    screen_array()[:] = SKY
+    draw_line(view, -5e6, -5e6, -4e6, -4e6, screen.COLOR_WHITE)  # all off screen
+    fill_polygon(view, [-5e6, -4e6, -4e6], [0.0, 0.0, 10.0], screen.COLOR_RED)
+    assert (screen_array() == SKY).all()

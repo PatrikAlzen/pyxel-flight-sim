@@ -21,7 +21,15 @@ from flightsim.terrain.biomes import Biome
 WRECK_FULL_SIZE_DISTANCE = 40.0
 WRECK_TILT = -14.0  # degrees: lying on its side
 # Below this scale (about three pixels wide) a sprite is not worth drawing.
-MIN_SCALE = 0.12
+MIN_SCALE = 0.12  # at the terrain's resolution; scaled with the view
+
+
+def pixel_scale(renderer) -> int:
+    """How many screen pixels one terrain pixel covers for this renderer or
+    view (a ``ScreenView`` draws sharper than the terrain under it)."""
+    return getattr(renderer, "scale", 1)
+
+
 # Below 1 the top view is only used when looking at a plane nearly straight
 # down or up; the rear and side views say more about how it flies.
 TOP_VIEW_BIAS = 0.8
@@ -119,8 +127,9 @@ def draw_particles(
     smoke_alpha = (
         0.7 * np.minimum(1.0, particles.age / 0.5) * np.minimum(1.0, fade * 1.3)
     )
+    smallest = 0.5 * pixel_scale(renderer)  # half a terrain pixel
     for i in np.flatnonzero(visible)[np.argsort(-depth[visible])]:  # far to near
-        x, y, r = float(sx[i]), float(sy[i]), max(float(radius[i]), 0.5)
+        x, y, r = float(sx[i]), float(sy[i]), max(float(radius[i]), smallest)
         match particles.kind[i]:
             case Kind.SMOKE:
                 pyxel.dither(float(smoke_alpha[i]))
@@ -185,7 +194,7 @@ def draw_billboards(
     sx, sy, depth = project_points(camera, positions, renderer.focal, w, h)
     scale = full / np.where(depth > 0, depth, np.inf)
     size = widths * scale
-    visible = (depth > 1.0) & (scale >= MIN_SCALE)
+    visible = (depth > 1.0) & (scale >= MIN_SCALE * pixel_scale(renderer))
     visible &= (sx > -size) & (sx < w + size) & (sy > -size) & (sy < h + size)
     world_height = heights * full / renderer.focal
     visible &= billboard_visible(renderer, camera, positions, world_height)
@@ -293,7 +302,7 @@ def draw_aircraft(
     view, mirrored, angle = aircraft_pose(forward, up, point[0], camera)
     img = sprites[view]
     scale = span * renderer.focal / (img.width * depth[0])
-    if scale < MIN_SCALE:
+    if scale < MIN_SCALE * pixel_scale(renderer):
         return
     pyxel.blt(
         sx[0] - img.width / 2,

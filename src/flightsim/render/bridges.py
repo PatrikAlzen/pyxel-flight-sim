@@ -17,10 +17,9 @@ fog level for their distance, so bridges follow the time of day and weather.
 import math
 
 import numpy as np
-import pyxel
 
 from flightsim.render import palette
-from flightsim.render.mesh import NEAR, View, fill_cut, line_cam
+from flightsim.render.mesh import NEAR, View, fill_cut, fill_polygon, line_cam
 from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 from flightsim.terrain.biomes import Biome
@@ -134,9 +133,7 @@ def draw_bridges(
             surface = _DECK_SURFACES[f] if deck else PILLAR
             color = _color(surface, fog[i])
             if ahead[i, f].all():
-                x, y = sx[i, f], sy[i, f]
-                pyxel.tri(x[0], y[0], x[1], y[1], x[2], y[2], color)
-                pyxel.tri(x[0], y[0], x[2], y[2], x[3], y[3], color)
+                fill_polygon(view, sx[i, f].tolist(), sy[i, f].tolist(), color)
             elif not fill_cut(view, cam[i, f], color):
                 continue
             filled += 1

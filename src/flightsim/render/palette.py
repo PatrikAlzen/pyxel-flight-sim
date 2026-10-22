@@ -32,6 +32,9 @@ FOG_COLOR = 0xBCD6EC
 
 SKY_BASE = TERRAIN_BASE + TERRAIN_COLORS * FOG_LEVELS
 SKY_COLORS = 8
+# The interface layer is cleared to this before drawing; it is left out when
+# the layer is laid over the world.
+CLEAR = SKY_BASE + SKY_COLORS
 SKY_ZENITH = 0x3A64B0
 
 # (shadow, sunlit) RGB per biome; intermediate shades are interpolated.
@@ -138,6 +141,7 @@ def colors(lighting: Lighting = DAY) -> list[int]:
         _lerp_rgb(lighting.fog, lighting.zenith, i / (SKY_COLORS - 1))
         for i in range(SKY_COLORS)
     ]
+    result.append(0xFF00FF)  # CLEAR: never drawn, marks the see-through parts
     return result
 
 

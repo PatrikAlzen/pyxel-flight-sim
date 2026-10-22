@@ -12,12 +12,15 @@ looks away are silhouettes; drawn a pixel out all round before the faces,
 they leave a dark rim round the model that keeps it readable against the
 sky. Close enough to cut through the camera, a model has no outline.
 
-The cutting and projection helpers are shared with the bridges.
+The cutting and projection helpers are shared with the bridges. Pyxel takes
+longer the further a shape reaches off the screen (a triangle a million pixels
+across takes ~10 ms), and a corner just in front of the camera projects very
+far out, so shapes are cut to a band round the screen before they are drawn.
 """
 
-import itertools
 import math
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 import pyxel
@@ -27,6 +30,7 @@ from flightsim.render.voxel import VoxelRenderer
 from flightsim.sim.camera import Camera
 
 NEAR = 0.5  # faces are cut this far in front of the camera
+GUARD = 1024.0  # pixels round the screen that shapes are cut to
 SUN = np.array([0.4, 0.3, 0.86]) / np.linalg.norm([0.4, 0.3, 0.86])
 OUTLINE = pyxel.COLOR_BLACK
 _AROUND = ((-1, 0), (1, 0), (0, -1), (0, 1))  # the outline is drawn shifted
@@ -41,6 +45,13 @@ class View:
         self.to_camera = np.array([self.right, self.up, self.forward]).T
         self.focal = renderer.focal
         self.cx, self.cy = renderer.width / 2, renderer.height / 2
+        # The band round the screen: left, right, top, bottom.
+        self.bounds = (
+            -GUARD,
+            renderer.width + GUARD,
+            -GUARD,
+            renderer.height + GUARD,
+        )
 
     def project(self, cam: np.ndarray) -> np.ndarray:
         return np.stack(
@@ -50,6 +61,68 @@ class View:
             ],
             axis=-1,
         )
+
+
+def fill_polygon(view: View, xs: list[float], ys: list[float], color: int) -> None:
+    """Fill a convex screen polygon, cut to the band round the screen first if
+    it reaches beyond it."""
+    left, right, top, bottom = view.bounds
+    if min(xs) < left or max(xs) > right or min(ys) < top or max(ys) > bottom:
+        points = list(zip(xs, ys))
+        for axis, limit, keep_below in (
+            (0, left, False),
+            (0, right, True),
+            (1, top, False),
+            (1, bottom, True),
+        ):
+            points = _cut_2d(points, axis, limit, keep_below)
+            if len(points) < 3:
+                return
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+    for i in range(1, len(xs) - 1):
+        pyxel.tri(xs[0], ys[0], xs[i], ys[i], xs[i + 1], ys[i + 1], color)
+
+
+def _cut_2d(points: list, axis: int, limit: float, keep_below: bool) -> list:
+    """The part of a polygon on one side of a vertical or horizontal line."""
+    out = []
+    for i, a in enumerate(points):
+        b = points[(i + 1) % len(points)]
+        a_in = (a[axis] <= limit) if keep_below else (a[axis] >= limit)
+        b_in = (b[axis] <= limit) if keep_below else (b[axis] >= limit)
+        if a_in:
+            out.append(a)
+        if a_in != b_in:
+            t = (limit - a[axis]) / (b[axis] - a[axis])
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
+def draw_line(
+    view: View, x0: float, y0: float, x1: float, y1: float, color: int
+) -> None:
+    """A screen line, cut to the band round the screen (Liang-Barsky)."""
+    left, right, top, bottom = view.bounds
+    dx, dy = x1 - x0, y1 - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in (
+        (-dx, x0 - left),
+        (dx, right - x0),
+        (-dy, y0 - top),
+        (dy, bottom - y0),
+    ):
+        if p == 0:
+            if q < 0:
+                return  # parallel to this edge and outside it
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return
+    pyxel.line(x0 + dx * t0, y0 + dy * t0, x0 + dx * t1, y0 + dy * t1, color)
 
 
 def cut(polygon: np.ndarray) -> np.ndarray:
@@ -73,9 +146,7 @@ def fill_cut(view: View, polygon: np.ndarray, color: int) -> bool:
     if len(polygon) < 3:
         return False
     screen = view.project(polygon)
-    x0, y0 = screen[0]
-    for (x1, y1), (x2, y2) in itertools.pairwise(screen[1:]):
-        pyxel.tri(x0, y0, x1, y1, x2, y2, color)
+    fill_polygon(view, screen[:, 0].tolist(), screen[:, 1].tolist(), color)
     return True
 
 
@@ -89,7 +160,8 @@ def line_cam(view: View, a: list[float], b: list[float], color: int) -> None:
         t = (a[2] - NEAR) / (a[2] - b[2])
         b = [a[k] + (b[k] - a[k]) * t for k in range(3)]
     f, cx, cy = view.focal, view.cx, view.cy
-    pyxel.line(
+    draw_line(
+        view,
         cx + a[0] / a[2] * f,
         cy - a[1] / a[2] * f,
         cx + b[0] / b[2] * f,
@@ -290,10 +362,19 @@ def draw_mesh(
         # then cover the inner edges and only a thin rim round the whole model
         # is left, like the sprites' outline.
         rim = facing[mesh.edge_faces[:, 0]] != facing[mesh.edge_faces[:, 1]]
+        left, right, top, bottom = view.bounds
+        inside = [
+            ok and left < x < right and top < y < bottom
+            for ok, x, y in zip(ahead.tolist(), sx, sy)
+        ]
         for a, b in mesh.edges[rim].tolist():
-            if ahead[a] and ahead[b]:
-                for dx, dy in _AROUND:
-                    pyxel.line(sx[a] + dx, sy[a] + dy, sx[b] + dx, sy[b] + dy, outline)
+            if not (ahead[a] and ahead[b]):
+                continue
+            # Most edges are on screen and go straight to Pyxel; the few that
+            # reach far off it are cut first.
+            line = pyxel.line if inside[a] and inside[b] else partial(draw_line, view)
+            for dx, dy in _AROUND:
+                line(sx[a] + dx, sy[a] + dy, sx[b] + dx, sy[b] + dy, outline)
     order = np.flatnonzero(facing)
     order = order[np.argsort(-depth[order])]
     faces = mesh.faces.tolist()
@@ -301,9 +382,10 @@ def draw_mesh(
     for f in order.tolist():
         a, b, c, d = faces[f]
         if ahead[a] and ahead[b] and ahead[c] and ahead[d]:
-            pyxel.tri(sx[a], sy[a], sx[b], sy[b], sx[c], sy[c], colors[f])
-            if d != c:
-                pyxel.tri(sx[a], sy[a], sx[c], sy[c], sx[d], sy[d], colors[f])
+            corners = (a, b, c) if d == c else (a, b, c, d)
+            fill_polygon(
+                view, [sx[k] for k in corners], [sy[k] for k in corners], colors[f]
+            )
         elif not fill_cut(view, cam[list(dict.fromkeys((a, b, c, d)))], colors[f]):
             continue
         filled += 1
